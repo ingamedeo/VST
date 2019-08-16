@@ -15,12 +15,26 @@ Section IO_Dry.
 
 Definition bytes_to_memvals li := concat (map (fun i => encode_val Mint8unsigned (Vubyte i)) li).
 
+Fact inj_bytes_encode_1 : forall v, Byte (Byte.repr v) :: nil = inj_bytes (encode_int 1 v).
+Proof. intros; apply inj_proj_bytes; auto. Qed.
+
+Corollary Zlength_inj_bytes : forall bl, Zlength (inj_bytes bl) = Zlength bl.
+Proof. intros; rewrite !Zlength_correct, length_inj_bytes; auto. Qed.
+
+(* TODO: replace bytes_to_memvals with inj_bytes at some point *)
+Lemma bytes_to_memvals_inj_bytes : forall vs,
+  bytes_to_memvals vs = inj_bytes vs.
+Proof.
+  unfold bytes_to_memvals, inj_bytes; induction vs; cbn; auto.
+  rewrite <- IHvs, <- inj_bytes_encode_1; cbn.
+  rewrite Int.unsigned_repr, Byte.repr_unsigned; auto.
+  pose proof (Byte.unsigned_range a) as Hrange.
+  cbv -[Z.lt Z.le Byte.unsigned] in Hrange; cbn; omega.
+Qed.
+
 Lemma bytes_to_memvals_length : forall li, Zlength (bytes_to_memvals li) = Zlength li.
 Proof.
-  intros.
-  rewrite !Zlength_correct; f_equal.
-  unfold bytes_to_memvals.
-  rewrite <- map_map, encode_vals_length, map_length; auto.
+  intros; rewrite bytes_to_memvals_inj_bytes, Zlength_inj_bytes; auto.
 Qed.
 
 Context {E : Type -> Type} {IO_E : @IO_event nat -< E}.

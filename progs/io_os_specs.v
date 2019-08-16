@@ -5,6 +5,7 @@ Require Import compcert.common.AST.
 Require Import compcert.common.Memory.
 Require Import compcert.common.Values.
 Require Import Decimal.
+Require Import Lia.
 Require Import List.
 Require Import ZArith.
 
@@ -85,6 +86,33 @@ Module FlatMem.
 
   Definition storebytes (h : flatmem) (addr : Z) (bytes : list memval) : flatmem :=
     setN bytes addr h.
+
+  Lemma setN_other : forall vs v p q,
+    (forall r, p <= r < p + Z_of_nat (length vs) -> r <> q) ->
+    ZMap.get q (setN vs p v) = ZMap.get q v.
+  Proof.
+    induction vs; cbn -[Z.of_nat]; intros * Hother; auto.
+    rewrite Nat2Z.inj_succ in Hother.
+    rewrite IHvs.
+    - rewrite ZMap.gso; auto.
+      apply not_eq_sym, Hother; lia.
+    - intros; apply Hother; lia.
+  Qed.
+
+  Corollary setN_outside : forall vs v p q,
+    q < p \/ q >= p + Z_of_nat (length vs) ->
+    ZMap.get q (setN vs p v) = ZMap.get q v.
+  Proof.
+    intros; apply setN_other; intros; lia.
+  Qed.
+
+  Lemma getN_setN : forall vs v n,
+    let vs' := inj_bytes vs in
+    getN (length vs') n (setN vs' n v) = vs'.
+  Proof.
+    induction vs; intros; cbn; auto.
+    rewrite IHvs, setN_outside, ZMap.gss; auto; lia.
+  Qed.
 
 End FlatMem.
 
@@ -759,7 +787,7 @@ Fixpoint cons_buf_read_loop_spec (n : nat) (read : nat) (addr : Z) (abd : RData)
       if zeq c (-1) then Some (abd, Z.of_nat read)
       else
         let m' := FlatMem.store Mint8unsigned abd.(HP) addr (Vint (Int.repr c)) in
-        cons_buf_read_loop_spec n' (S read) addr (abd' {HP : m'})
+        cons_buf_read_loop_spec n' (S read) (addr + 1) (abd' {HP : m'})
     | None => None
     end
   end.
