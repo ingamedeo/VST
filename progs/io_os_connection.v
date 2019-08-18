@@ -1844,6 +1844,15 @@ Section SpecsCorrect.
   Defined.
   Opaque storebytes.
 
+  Lemma flatmem_to_mem_contents : forall f m b ofs len,
+    let addr := block_to_addr b + ofs in
+    let bytes := FlatMem.getN (Z.to_nat len) addr f in
+    let contents := setN bytes ofs (m.(mem_contents) !! b) in
+    mem_contents (flatmem_to_mem f m b ofs len) = PMap.set b contents m.(mem_contents).
+  Proof.
+    unfold flatmem_to_mem; intros *; destruct m; cbn; auto.
+  Qed.
+
   Lemma flatmem_to_mem_perm : forall f m b ofs len b' ofs' k p,
     perm (flatmem_to_mem f m b ofs len) b' ofs' k p <-> perm m b' ofs' k p.
   Proof.
@@ -1859,23 +1868,43 @@ Section SpecsCorrect.
   Import mem_lessdef.
   Lemma flatmem_to_mem_storebytes_equiv : forall f m b ofs vs m',
     let addr := block_to_addr b + ofs in
-    storebytes m b ofs vs = Some m' ->
-    mem_equiv (flatmem_to_mem (FlatMem.storebytes f addr vs) m b ofs (Zlength vs)) m'.
+    storebytes m b ofs (inj_bytes vs) = Some m' ->
+    mem_equiv (flatmem_to_mem (FlatMem.storebytes f addr (inj_bytes vs)) m b ofs (Zlength vs)) m'.
   Proof.
     intros * Hm'; subst addr; apply mem_lessdef_equiv; repeat split.
     - intros * Hload.
-      admit.
+      edestruct loadbytes_inj as (? & Hload' & ?); eauto.
+      3: rewrite Z.add_0_r in Hload'; eauto.
+      2: auto.
+      unfold inject_id; constructor; intros * ?; inj.
+      + rewrite Z.add_0_r, flatmem_to_mem_perm; eauto using perm_storebytes_1.
+      + exists 0; auto.
+      + intros Hperm; rewrite Z.add_0_r.
+        apply storebytes_mem_contents in Hm' as ->.
+        unfold FlatMem.storebytes.
+        rewrite flatmem_to_mem_contents, ZtoNat_Zlength, <- length_inj_bytes, FlatMem.getN_setN.
+        apply mem_lemmas.memval_inject_id_refl.
     - intros * Hperm.
       rewrite flatmem_to_mem_perm in Hperm.
       eapply perm_storebytes_1; eauto.
     - erewrite flatmem_to_mem_nextblock, <- nextblock_storebytes; eauto; lia.
     - intros * Hload.
-      admit.
+      edestruct loadbytes_inj as (? & Hload' & ?); eauto.
+      3: rewrite Z.add_0_r in Hload'; eauto.
+      2: auto.
+      unfold inject_id; constructor; intros * ?; inj.
+      + rewrite Z.add_0_r, flatmem_to_mem_perm; eauto using perm_storebytes_2.
+      + exists 0; auto.
+      + intros Hperm; rewrite Z.add_0_r.
+        apply storebytes_mem_contents in Hm' as ->.
+        unfold FlatMem.storebytes.
+        rewrite flatmem_to_mem_contents, ZtoNat_Zlength, <- length_inj_bytes, FlatMem.getN_setN.
+        apply mem_lemmas.memval_inject_id_refl.
     - intros * Hperm.
       rewrite flatmem_to_mem_perm.
       eapply perm_storebytes_2 in Hperm; eauto.
     - erewrite flatmem_to_mem_nextblock, nextblock_storebytes; eauto; lia.
-  Admitted.
+  Qed.
 
   Record R_sys_getc_correct k z m st st' ret := {
     (* New itree is old k applied to result, or same as old itree if nothing
@@ -2106,8 +2135,7 @@ Section SpecsCorrect.
         apply range_perm_storebytes_less with (bytes := inj_bytes msg) in Hperm as (m' & Hm').
         2: rewrite Zlength_inj_bytes; lia.
         exists m'; split; auto.
-        eapply flatmem_to_mem_storebytes_equiv in Hm'.
-        rewrite Zlength_inj_bytes in Hm'; eauto.
+        eapply flatmem_to_mem_storebytes_equiv in Hm'; eauto.
       + (* trace_itree_match *)
         admit.
   Admitted.
