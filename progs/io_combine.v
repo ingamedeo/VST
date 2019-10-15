@@ -67,7 +67,7 @@ Variable (b2a : block_to_addr).
 
 (* Because putchar and getchar don't use memory, these functions don't either. *)
 Definition IO_inj_mem (e : external_function) (args : list val) (m : mem) t s :=
-  valid_trace s /\ t = trace_of_ostrace s.(io_log).
+  valid_trace s /\ R_mem b2a m (HP s) /\ t = trace_of_ostrace s.(io_log).
 Definition OS_mem (e : external_function) (args : list val) m (s : RData) : mem := m.
 (* In general, this could look like:
   if oi_eq_dec (Some (ext_link "putchars"%string, ...) (ef_id_sig ext_link e) then
@@ -92,7 +92,7 @@ Theorem IO_OS_soundness:
 Proof.
   intros; eapply OS_soundness with (dryspec := io_dry_spec ext_link); eauto.
   - unfold IO_ext_sem; intros; simpl in *.
-    destruct H2 as [Hvalid Htrace].
+    destruct H2 as (Hvalid & HRmem & Htrace).
     if_tac; [|if_tac; [|contradiction]].
     + destruct w as (? & _ & ? & ?).
       destruct H1 as (? & ? & Hpre); subst.
@@ -107,14 +107,13 @@ Proof.
       destruct s; simpl in *.
       unfold sys_getc_wrap_spec in *.
       destruct (sys_getc_spec) eqn:Hspec; inv H3.
-      eapply sys_getc_correct with (m1 := m) in Hspec as (? & -> & [? Hpost ? ?]); eauto.
+      eapply sys_getc_correct with (m1 := m0) in Hspec as (? & -> & [? Hpost ? ?]); eauto.
       * split; auto; do 2 eexists; eauto.
         unfold getchar_post, getchar_post' in *.
         destruct Hpost as [? Hpost]; split; auto.
         destruct Hpost as [[]|[-> ->]]; split; try (simpl in *; rep_omega).
         -- rewrite if_false by omega; eauto.
         -- rewrite if_true; auto.
-      * admit. (* TODO: R_mem *)
       * unfold getchar_pre, getchar_pre' in *.
         apply Traces.sutt_trace_incl; auto.
   - apply juicy_dry_specs.
@@ -137,11 +136,11 @@ Definition IO_ext_sem' e (args : list val) s :=
 Definition IO_specs' (ext_link : string -> ident) :=
   [(ext_link "getchar"%string, getchar_spec)].
 
-Instance IO_Espec' : OracleKind := add_funspecs IO_void_Espec ext_link (IO_specs' ext_link).
+Instance IO_Espec' : OracleKind := add_funspecs (@IO_void_Espec (@IO_event nat)) ext_link (IO_specs' ext_link).
 
 Definition io_ext_spec := OK_spec.
 
-Program Definition io_dry_spec : external_specification mem external_function IO_itree.
+Program Definition io_dry_spec : external_specification mem external_function (@IO_itree (@IO_event nat)).
 Proof.
   unshelve econstructor.
   - intro e.
@@ -214,7 +213,7 @@ Proof.
         -- unfold SEPx; simpl.
              rewrite seplog.sepcon_emp.
              unfold ITREE; exists x; split; [if_tac; auto|].
-             { subst; apply eutt_sutt, UpToTausCore.Reflexive_eutt. }
+             { subst. apply Reflexive_sutt. }
              eapply age_to.age_to_pred, change_has_ext; eauto.
       * eapply necR_trans; eauto; apply age_to.age_to_necR.
       * rewrite H3; eexists; constructor; constructor.
@@ -257,18 +256,18 @@ Theorem IO_OS_soundness':
 Proof.
   intros; eapply OS_soundness with (dryspec := io_dry_spec); eauto.
   - unfold IO_ext_sem'; intros; simpl in *.
-    destruct H2 as [Hvalid Htrace].
+    destruct H2 as (Hvalid & HRmem & Htrace).
     if_tac; [|contradiction].
     + destruct w as (? & _ & ?).
       destruct H1 as (? & ? & Hpre); subst.
       destruct s; simpl in *.
       unfold sys_getc_wrap_spec in *.
       destruct (sys_getc_spec) eqn:Hspec; inv H3.
-      eapply sys_getc_correct with (m1 := m) in Hspec as (? & -> & [? Hpost ? ?]); eauto.
+      eapply sys_getc_correct with (m1 := m0) in Hspec as (? & -> & [? Hpost ? ?]); eauto.
       * split; auto; do 2 eexists; eauto.
         unfold getchar_post, getchar_post' in *.
         destruct Hpost as [? Hpost]; split; auto.
-        destruct Hpost as [[]|[-> ->]]; split; try (simpl in *; omega).
+        destruct Hpost as [[]|[-> ->]]; split; try (simpl in *; rep_omega).
         -- rewrite if_false by omega; eauto.
         -- rewrite if_true; auto.
       * unfold getchar_pre, getchar_pre' in *.
@@ -372,6 +371,27 @@ Local Ltac destruct_spec Hspec :=
     { rewrite <- H, common_prefix_sym; apply common_prefix_length. }
   Qed.
 
+  Lemma IO_ext_sem_trace' : forall e args s s' ret t, valid_trace s -> IO_ext_sem' e args s = Some (s', ret, t) ->
+    s.(io_log) = common_prefix IOEvent_eq s.(io_log) s'.(io_log) /\
+    t = trace_of_ostrace (strip_common_prefix IOEvent_eq s.(io_log) s'.(io_log)).
+  Proof.
+    intros until 1.
+    unfold IO_ext_sem'.
+    if_tac.
+    - unfold sys_getc_wrap_spec.
+      destruct sys_getc_spec eqn: Hgetc; inversion 1; subst; split; auto.
+      pose proof Hgetc as Hspec.
+      unfold sys_getc_spec in Hgetc; destruct_spec Hgetc.
+      unfold uctx_set_errno_spec in Hgetc; destruct_spec Hgetc.
+      unfold uctx_set_retval1_spec in Heqo2; destruct_spec Heqo2.
+      destruct r1; cbn in *.
+      eapply sys_getc_trace_case in Hspec as []; auto.
+      unfold get_sys_ret; cbn.
+      repeat (rewrite ZMap.gss in * || rewrite ZMap.gso in * by easy); subst; inj; reflexivity.
+    - inversion 1.
+      rewrite common_prefix_full, strip_all; auto.
+  Qed.
+
   Lemma OS_trace_correct' : forall n t traces z s0 c m
     (Hvalid : valid_trace s0) (Ht : t = trace_of_ostrace s0.(io_log)),
     OS_safeN_trace n t traces z s0 c m ->
@@ -383,8 +403,8 @@ Local Ltac destruct_spec Hspec :=
     - eauto.
     - destruct (H3 _ H0) as (? & s' & ? & ? & ? & ? & ? & ? & Hinj & Hcall & ? & ? & ? & ? & ? & ? & ? & ? & Hsafe & ? & ? & ? & Heq).
       inv Heq.
-      destruct Hinj as [? Htrace].
-      apply IO_ext_sem_trace in Hcall as [Hprefix]; auto; subst.
+      destruct Hinj as (? & ? & Htrace).
+      apply IO_ext_sem_trace' in Hcall as [Hprefix]; auto; subst.
       eapply IHn in Hsafe as [? Htrace']; eauto; try omega.
       split; auto.
       rewrite Htrace, <- Htrace', <- app_trace_assoc, app_trace_strip; auto.
