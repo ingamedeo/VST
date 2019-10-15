@@ -10,16 +10,6 @@ Require Import VST.veric.Clight_new.
 Require Import VST.progs.conclib.
 Require Import VST.sepcomp.semantics.
 Require Import ITree.ITree.
-(* Import ITreeNotations. *) (* one piece conflicts with subp notation *)
-Notation "t1 >>= k2" := (ITree.bind t1 k2)
-  (at level 50, left associativity) : itree_scope.
-Notation "x <- t1 ;; t2" := (ITree.bind t1 (fun x => t2))
-  (at level 100, t1 at next level, right associativity) : itree_scope.
-Notation "t1 ;; t2" := (ITree.bind t1 (fun _ => t2))
-  (at level 100, right associativity) : itree_scope.
-Notation "' p <- t1 ;; t2" :=
-  (ITree.bind t1 (fun x_ => match x_ with p => t2 end))
-(at level 100, t1 at next level, p pattern, right associativity) : itree_scope.
 Require Import ITree.Interp.Traces.
 Require Import Ensembles.
 Require Import VST.progs.io_specs.
@@ -38,7 +28,7 @@ Definition ext_link := ext_link_prog prog.
 
 Definition sys_getc_wrap_spec (abd : RData) : option (RData * val * trace) :=
   match sys_getc_spec abd with
-  | Some abd' => Some (abd', get_sys_ret abd', trace_of_ostrace (strip_common_prefix IOEvent_eq abd.(io_rx_log) abd'.(io_rx_log)))
+  | Some abd' => Some (abd', get_sys_ret abd', trace_of_ostrace (strip_common_prefix IOEvent_eq abd.(io_log) abd'.(io_log)))
   | None => None
   end.
 
@@ -48,7 +38,7 @@ Definition sys_putc_wrap_spec (cv : val) (abd : RData) : option (RData * val * t
   | Vint c, Vint c' =>
     if eq_dec.eq_dec c c' then
       match sys_putc_spec abd with
-      | Some abd' => Some (abd', get_sys_ret abd', trace_of_ostrace (strip_common_prefix IOEvent_eq abd.(io_tx_log) abd'.(io_tx_log)))
+      | Some abd' => Some (abd', get_sys_ret abd', trace_of_ostrace (strip_common_prefix IOEvent_eq abd.(io_log) abd'.(io_log)))
       | None => None
       end
     else None
@@ -73,11 +63,11 @@ Definition IO_ext_sem e (args : list val) s :=
     end
   else Some (s, None, TEnd).
 
-Variable (R_mem : block -> Z).
+Variable (b2a : block_to_addr).
 
 (* Because putchar and getchar don't use memory, these functions don't either. *)
 Definition IO_inj_mem (e : external_function) (args : list val) (m : mem) t s :=
-  valid_trace s /\ t = trace_of_ostrace s.(io_rx_log).
+  valid_trace s /\ t = trace_of_ostrace s.(io_log).
 Definition OS_mem (e : external_function) (args : list val) m (s : RData) : mem := m.
 (* In general, this could look like:
   if oi_eq_dec (Some (ext_link "putchars"%string, ...) (ef_id_sig ext_link e) then
@@ -121,9 +111,10 @@ Proof.
       * split; auto; do 2 eexists; eauto.
         unfold getchar_post, getchar_post' in *.
         destruct Hpost as [? Hpost]; split; auto.
-        destruct Hpost as [[]|[-> ->]]; split; try (simpl in *; omega).
+        destruct Hpost as [[]|[-> ->]]; split; try (simpl in *; rep_omega).
         -- rewrite if_false by omega; eauto.
         -- rewrite if_true; auto.
+      * admit. (* TODO: R_mem *)
       * unfold getchar_pre, getchar_pre' in *.
         apply Traces.sutt_trace_incl; auto.
   - apply juicy_dry_specs.
@@ -131,7 +122,7 @@ Proof.
 Qed.
 
 (* relate to OS's external events *)
-  Notation ge := (globalenv prog).
+Notation ge := (globalenv prog).
 
 (* for now, this is only proved for getchar *)
 Definition IO_ext_sem' e (args : list val) s :=
@@ -332,13 +323,26 @@ Local Ltac destruct_spec Hspec :=
   | match ?x with _ => _ end = _ => destruct x eqn:?; subst; inj; try discriminate
   end.
 
-  Lemma IO_ext_sem_trace : forall e args s s' ret t, valid_trace s -> IO_ext_sem' e args s = Some (s', ret, t) ->
-    s.(io_rx_log) = common_prefix IOEvent_eq s.(io_rx_log) s'.(io_rx_log) /\
-    t = trace_of_ostrace (strip_common_prefix IOEvent_eq s.(io_rx_log) s'.(io_rx_log)).
+  Lemma IO_ext_sem_trace : forall e args s s' ret t, valid_trace s -> IO_ext_sem e args s = Some (s', ret, t) ->
+    s.(io_log) = common_prefix IOEvent_eq s.(io_log) s'.(io_log) /\
+    t = trace_of_ostrace (strip_common_prefix IOEvent_eq s.(io_log) s'.(io_log)).
   Proof.
     intros until 1.
-    unfold IO_ext_sem'.
-    if_tac.
+    unfold IO_ext_sem.
+    if_tac; [|if_tac].
+    - unfold sys_putc_wrap_spec.
+      destruct args as [| [] [|]]; try discriminate.
+      destruct get_sys_arg1 eqn: Harg; try discriminate.
+      destruct (eq_dec _ _); try discriminate.
+      destruct sys_putc_spec eqn: Hputc; inversion 1; subst; split; auto.
+      pose proof Hputc as Hspec.
+      unfold sys_putc_spec in Hputc; destruct_spec Hputc.
+      unfold uctx_set_errno_spec in Hputc; destruct_spec Hputc.
+      unfold uctx_set_retval1_spec in Heqo3; destruct_spec Heqo3.
+      destruct r1; cbn in *.
+      eapply sys_putc_trace_case in Hspec as []; eauto.
+      unfold get_sys_ret; cbn.
+      repeat (rewrite ZMap.gss in * || rewrite ZMap.gso in * by easy); subst; inj; reflexivity.
     - unfold sys_getc_wrap_spec.
       destruct sys_getc_spec eqn: Hgetc; inversion 1; subst; split; auto.
       pose proof Hgetc as Hspec.
@@ -369,9 +373,9 @@ Local Ltac destruct_spec Hspec :=
   Qed.
 
   Lemma OS_trace_correct' : forall n t traces z s0 c m
-    (Hvalid : valid_trace s0) (Ht : t = trace_of_ostrace s0.(io_rx_log)),
+    (Hvalid : valid_trace s0) (Ht : t = trace_of_ostrace s0.(io_log)),
     OS_safeN_trace n t traces z s0 c m ->
-    forall t' sf, In _ traces (t', sf) -> valid_trace sf /\ app_trace (trace_of_ostrace s0.(io_rx_log)) t' = trace_of_ostrace sf.(io_rx_log).
+    forall t' sf, In _ traces (t', sf) -> valid_trace sf /\ app_trace (trace_of_ostrace s0.(io_log)) t' = trace_of_ostrace sf.(io_log).
   Proof.
     induction n as [n IHn] using lt_wf_ind; intros; inv H.
     - inv H0.
@@ -387,7 +391,7 @@ Local Ltac destruct_spec Hspec :=
       { rewrite Htrace, app_trace_strip; auto. }
   Qed.
 
-  Lemma init_log_valid : forall s, io_rx_log s = [] -> console s = {| cons_buf := []; rpos := 0 |} -> valid_trace s.
+  Lemma init_log_valid : forall s, io_log s = [] -> console s = {| cons_buf := []; rpos := 0 |} -> valid_trace s.
   Proof.
     intros s Hinit Hcon.
     constructor; rewrite Hinit; repeat intro; try (pose proof app_cons_not_nil; congruence).
@@ -397,9 +401,9 @@ Local Ltac destruct_spec Hspec :=
   Qed.
 
   Lemma OS_trace_correct : forall n traces z s0 c m
-    (Hinit : s0.(io_rx_log) = []) (Hcon : s0.(console) = {| cons_buf := []; rpos := 0 |}),
+    (Hinit : s0.(io_log) = []) (Hcon : s0.(console) = {| cons_buf := []; rpos := 0 |}),
     OS_safeN_trace n TEnd traces z s0 c m ->
-    forall t sf, In _ traces (t, sf) -> valid_trace sf /\ t = trace_of_ostrace sf.(io_rx_log).
+    forall t sf, In _ traces (t, sf) -> valid_trace sf /\ t = trace_of_ostrace sf.(io_log).
   Proof.
     intros; eapply OS_trace_correct' in H as [? Htrace]; eauto.
     split; auto.
@@ -475,10 +479,10 @@ Theorem IO_OS_ext:
      Genv.find_symbol (Genv.globalenv prog) (prog_main prog) = Some b /\
      initial_core (cl_core_sem (globalenv prog))
          0 m q m' (Vptr b Ptrofs.zero) nil /\
-   forall n s0, s0.(io_rx_log) = [] -> s0.(console) = {| cons_buf := []; rpos := 0 |} ->
+   forall n s0, s0.(io_log) = [] -> s0.(console) = {| cons_buf := []; rpos := 0 |} ->
     exists traces, OS_safeN_trace n TEnd traces initial_oracle s0 q m' /\
-     forall t s, In _ traces (t, s) -> exists z', consume_trace initial_oracle z' t /\ t = trace_of_ostrace s.(io_rx_log) /\
-      valid_trace_user s.(io_rx_log).
+     forall t s, In _ traces (t, s) -> exists z', consume_trace initial_oracle z' t /\ t = trace_of_ostrace s.(io_log) /\
+      valid_trace_user s.(io_log).
 Proof.
   intros; eapply IO_OS_soundness' in H as (? & ? & ? & ? & ? & Hsafe); eauto.
   do 4 eexists; eauto; split; eauto; intros.

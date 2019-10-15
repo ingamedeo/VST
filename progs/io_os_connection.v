@@ -21,7 +21,7 @@ Local Ltac inj :=
   | H: _ = _ |- _ => assert_succeeds (injection H); inv H
   end.
 
-Ltac prename' pat H name :=
+Local Ltac prename' pat H name :=
   match type of H with
   | context[?pat'] => unify pat pat'; rename H into name
   end.
@@ -236,20 +236,19 @@ Definition lex_le (p1 p2 : Z * Z) : Prop :=
   p1 = p2 \/ p1 <l p2 .
 Local Infix "<=l" := lex_le (at level 70).
 
-Import MonadNotation.
 Local Open Scope monad_scope.
 Local Open Scope Z.
 
 (* Weaker pre condition using trace_incl instead of eutt. *)
-Definition getchar_pre' (m : mem) (witness : int -> IO_itree) (z : IO_itree) :=
-  let k := witness in trace_incl (r <- read;; k r) z.
+Definition getchar_pre' (m : mem) (witness : byte -> IO_itree) (z : IO_itree) :=
+  let k := witness in trace_incl (r <- read stdin;; k r) z.
 
 (* CertiKOS specs must terminate. Could get blocking version back by
    wrapping getchar in a loop. *)
-Definition getchar_post' (m0 m : mem) r (witness : (int -> IO_itree) * IO_itree) (z : IO_itree) :=
+Definition getchar_post' (m0 m : mem) r (witness : (byte -> IO_itree) * IO_itree) (z : @IO_itree (@IO_event nat)) :=
   m0 = m /\
     (* Success *)
-    ((0 <= Int.signed r <= two_p 8 - 1 /\ let (k, _) := witness in z = k r) \/
+    ((0 <= Int.signed r <= two_p 8 - 1 /\ let (k, _) := witness in z = k (Byte.repr (Int.signed r))) \/
     (* No character to read *)
     (Int.signed r = -1 /\ let (_, z0) := witness in z = z0)).
 
@@ -263,7 +262,7 @@ Definition trace_event_rtype (e : IOEvent) :=
   match e with
   | IOEvRecv _ _ _ => void
   | IOEvSend _ _ => void
-  | IOEvGetc _ _ _ => int
+  | IOEvGetc _ _ _ => byte
   | IOEvPutc _ _ => unit
   end.
 
@@ -272,8 +271,8 @@ Definition io_event_of_io_tevent (e : IOEvent)
   match e with
   | IOEvRecv _ _ _ => None
   | IOEvSend _ _ => None
-  | IOEvGetc _ _ r => Some (ERead, Int.repr r)
-  | IOEvPutc _ r => Some (EWrite (Int.repr r), tt)
+  | IOEvGetc _ _ r => Some (ERead stdin, Byte.repr r)
+  | IOEvPutc _ r => Some (EWrite stdout (Byte.repr r), tt)
   end.
 
 Fixpoint trace_of_ostrace (t : ostrace) : @trace IO_event unit :=
@@ -299,7 +298,7 @@ Section Invariants.
 
   Definition get_sys_arg2 (st : RData) :=
     let curid := ZMap.get st.(CPU_ID) st.(cid) in
-    ZMap.get U_EBX (ZMap.get curid st.(uctxt)).
+    ZMap.get U_ESI (ZMap.get curid st.(uctxt)).
 
   Fixpoint compute_console' (tr : ostrace) : list (Z * Z * nat) :=
     match tr with
@@ -338,19 +337,22 @@ Section Invariants.
       tr = pre ++ IOEvGetc logIdx strIdx c :: post ->
       In (IOEvRecv logIdx strIdx c) pre /\ hd_error (compute_console pre) = Some (c, logIdx, strIdx).
 
-  (* Every event in the trace is unique. *)
-  Definition valid_trace_unique (tr : ostrace) := NoDup tr.
+  (* Every read event in the trace is unique. *)
+  Definition valid_trace_unique (tr : ostrace) :=
+    let tr' := filter (fun ev =>
+      match ev with | IOEvRecv _ _ _ | IOEvGetc _ _ _ => true | _ => false end) tr in
+    NoDup tr'.
 
   (* The console matches compute_console. *)
   Definition valid_trace_console tr cons := cons = compute_console tr.
 
   (* All trace invariants hold. *)
   Record valid_trace (st : RData) := {
-    vt_trace_serial : valid_trace_serial st.(io_rx_log) st.(com1).(l1);
-    vt_trace_ordered : valid_trace_ordered st.(io_rx_log);
-    vt_trace_user : valid_trace_user st.(io_rx_log);
-    vt_trace_unique : valid_trace_unique st.(io_rx_log);
-    vt_trace_console : valid_trace_console st.(io_rx_log) st.(console).(cons_buf);
+    vt_trace_serial : valid_trace_serial st.(io_log) st.(com1).(l1);
+    vt_trace_ordered : valid_trace_ordered st.(io_log);
+    vt_trace_user : valid_trace_user st.(io_log);
+    vt_trace_unique : valid_trace_unique st.(io_log);
+    vt_trace_console : valid_trace_console st.(io_log) st.(console).(cons_buf);
   }.
 
   (* Console entries are ordered by logIdx and strIdx *)
@@ -804,6 +806,41 @@ Section Invariants.
   *)
   Context `{ThreadsConfigurationOps}.
 
+  Lemma valid_trace_tx_event : forall st ev,
+    match ev with
+    | IOEvSend _ _ | IOEvPutc _ _ => True
+    | _ => False
+    end ->
+    valid_trace st ->
+    valid_trace (st {io_log : st.(io_log) ++ ev :: nil}).
+  Proof.
+    destruct ev; try easy; intros _ Hvalid; inv Hvalid; constructor; red; destruct st; cbn in *.
+    - intros * Heq.
+      apply in_app_case in Heq; cbn in Heq; intuition (try easy).
+      all: destruct H2; subst; eapply vt_trace_serial0; eauto.
+    - intros * Heq.
+      rewrite app_comm_cons, app_assoc in Heq.
+      apply in_app_case in Heq; cbn in Heq; intuition (try easy).
+      destruct H2; subst; eauto. eapply vt_trace_ordered0; rewrite app_comm_cons, app_assoc; eauto.
+    - intros * Heq.
+      apply in_app_case in Heq; cbn in Heq; intuition (try easy).
+      all: destruct H2; subst; eapply vt_trace_user0; eauto.
+    - rewrite conclib.filter_app, app_nil_r; auto.
+    - simpl_rev; cbn; auto.
+    - intros * Heq.
+      apply in_app_case in Heq; cbn in Heq; intuition (try easy).
+      all: destruct H2; subst; eapply vt_trace_serial0; eauto.
+    - intros * Heq.
+      rewrite app_comm_cons, app_assoc in Heq.
+      apply in_app_case in Heq; cbn in Heq; intuition (try easy).
+      destruct H2; subst; eauto. eapply vt_trace_ordered0; rewrite app_comm_cons, app_assoc; eauto.
+    - intros * Heq.
+      apply in_app_case in Heq; cbn in Heq; intuition (try easy).
+      all: destruct H2; subst; eapply vt_trace_user0; eauto.
+    - rewrite conclib.filter_app, app_nil_r; auto.
+    - simpl_rev; cbn; auto.
+  Qed.
+
   Lemma cons_intr_aux_preserve_valid_trace : forall st st',
     valid_trace st ->
     cons_intr_aux st = Some st' ->
@@ -848,8 +885,10 @@ Section Invariants.
         eapply in_mkRecvEvents in Hin.
         destruct Hin as (? & ? & ? & ? & ?); inj; easy.
       + (* valid_trace_unique *)
-        rewrite conclib.NoDup_app_iff; repeat split; auto using mkRecvEvents_NoDup.
-        intros * Hin Hin'.
+        rewrite conclib.filter_app, conclib.NoDup_app_iff; repeat split;
+          auto using mkRecvEvents_NoDup, conclib.NoDup_filter.
+        intros *; rewrite !filter_In.
+        intros (Hin & ?) (Hin' & ?).
         eapply in_mkRecvEvents in Hin'.
         destruct Hin' as (? & ? & ? & ? & ?); inj; subst.
         apply in_split in Hin; destruct Hin as (? & ? & ?); subst.
@@ -906,8 +945,10 @@ Section Invariants.
         eapply in_mkRecvEvents in Hin.
         destruct Hin as (? & ? & ? & ? & ?); inj; easy.
       + (* valid_trace_unique *)
-        rewrite conclib.NoDup_app_iff; repeat split; auto using mkRecvEvents_NoDup.
-        intros * Hin Hin'.
+        rewrite conclib.filter_app, conclib.NoDup_app_iff; repeat split;
+          auto using mkRecvEvents_NoDup, conclib.NoDup_filter.
+        intros *; rewrite !filter_In.
+        intros (Hin & ?) (Hin' & ?).
         eapply in_mkRecvEvents in Hin'.
         destruct Hin' as (? & ? & ? & ? & ?); inj; subst.
         apply in_split in Hin; destruct Hin as (? & ? & ?); subst.
@@ -961,16 +1002,28 @@ Section Invariants.
     induction n; intros * Hvalid Hspec; cbn -[cons_intr_aux] in Hspec; inj; auto.
     destruct_spec Hspec; auto.
     - eapply IHn; [| eauto].
-      destruct st; inv Hvalid; constructor; cbn in *; auto.
-      destruct com1; cbn in *; red; intros; subst; edestruct vt_trace_serial0; eauto.
       prename serial_intr into Hspec'; unfold serial_intr in Hspec'; destruct_spec Hspec'.
-      cbn; split; auto; lia.
+      destruct o.
+      + enough (Hvalid': valid_trace (st {io_log : io_log st ++ IOEvSend 0 z :: nil}));
+          auto using valid_trace_tx_event.
+        destruct st; inv Hvalid'; constructor; cbn in *; auto.
+        destruct com1; cbn in *; red; intros; subst; edestruct vt_trace_serial0; eauto.
+        cbn; split; auto; lia.
+      + rewrite app_nil_r; destruct st; inv Hvalid; constructor; cbn in *; auto.
+        destruct com1; cbn in *; red; intros; subst; edestruct vt_trace_serial0; eauto.
+        cbn; split; auto; lia.
     - eapply IHn; [| eauto].
       eapply cons_intr_aux_preserve_valid_trace; [| eauto].
-      destruct st; inv Hvalid; constructor; cbn in *; auto.
-      destruct com1; cbn in *; red; intros; subst; edestruct vt_trace_serial0; eauto.
       prename serial_intr into Hspec'; unfold serial_intr in Hspec'; destruct_spec Hspec'.
-      cbn; split; auto; lia.
+      destruct o.
+      + enough (Hvalid': valid_trace (st {io_log : io_log st ++ IOEvSend 0 z :: nil}));
+          auto using valid_trace_tx_event.
+        destruct st; inv Hvalid'; constructor; cbn in *; auto.
+        destruct com1; cbn in *; red; intros; subst; edestruct vt_trace_serial0; eauto.
+        cbn; split; auto; lia.
+      + rewrite app_nil_r; destruct st; inv Hvalid; constructor; cbn in *; auto.
+        destruct com1; cbn in *; red; intros; subst; edestruct vt_trace_serial0; eauto.
+        cbn; split; auto; lia.
   Qed.
 
   Lemma serial_intr_disable_preserve_valid_trace : forall st st',
@@ -1027,7 +1080,9 @@ Section Invariants.
     valid_trace st'.
   Proof.
     unfold serial_putc_spec; intros * Hvalid Hspec; destruct_spec Hspec; eauto.
-    all: destruct st; inv Hvalid; constructor; cbn in *; subst; red; auto.
+    all: enough (Hvalid': valid_trace (st {io_log : io_log st ++ IOEvPutc l2 c :: nil}));
+      auto using valid_trace_tx_event.
+    all: destruct st; inv Hvalid'; constructor; cbn in *; subst; auto.
   Qed.
 
   Lemma cons_buf_read_preserve_valid_trace : forall st st' c,
@@ -1047,7 +1102,7 @@ Section Invariants.
       intros * Heq.
       apply (f_equal (@rev _)) in Heq; simpl_rev_in Heq.
       destruct (rev post); cbn in Heq; inj; prename (rev _ = _) into Heq.
-      apply (f_equal (@rev _)) in Heq; simpl_rev_in Heq; subst; info_eauto.
+      apply (f_equal (@rev _)) in Heq; simpl_rev_in Heq; subst; eauto.
     - (* valid_trace_user *)
       intros * Heq.
       symmetry in Heq.
@@ -1058,8 +1113,9 @@ Section Invariants.
       apply in_console_in_trace.
       rewrite <- vt_trace_console0, Hcons; cbn; auto.
     - (* valid_trace_unique *)
-      rewrite conclib.NoDup_app_swap; cbn.
+      rewrite conclib.filter_app, conclib.NoDup_app_swap; cbn.
       constructor; auto; intros Hin.
+      rewrite filter_In in Hin; destruct Hin as (Hin & _).
       apply in_split in Hin.
       destruct Hin as (post & pre & ?); subst.
       edestruct vt_trace_user0 as (Hin & Hhd); eauto.
@@ -1299,13 +1355,62 @@ Section Invariants.
     eauto.
   Qed.
 
-  (** At most one user-visible event is generated. *)
+  Lemma cons_buf_read_loop_mem_changed : forall n st st' read addr read',
+    cons_buf_read_loop_spec n read addr st = Some (st', read') ->
+    exists msg,
+      Zlength msg = read' - Z.of_nat read /\
+      Zlength msg <= Z.of_nat n /\
+      FlatMem.storebytes st.(HP) addr (inj_bytes msg) = st'.(HP).
+  Proof.
+    induction n; intros * Hspec; cbn [cons_buf_read_loop_spec] in Hspec; inj.
+    - rewrite Z.sub_diag.
+      exists nil; cbn; repeat split; auto; lia.
+    - destruct_spec Hspec; inj.
+      + exists nil; cbn; repeat split; auto; lia.
+      + eapply IHn in Hspec; eauto.
+        cbn -[Z.of_nat] in Hspec; destruct Hspec as (msg & Hlen & ? & Hmem).
+        exists (Byte.repr (Int.unsigned (Int.repr z)) :: msg).
+        rewrite Zlength_cons, Hlen; cbn.
+        repeat split; try lia.
+        rewrite <- Hmem.
+        destruct r; cbn in *.
+        rewrite <- inj_bytes_encode_1; cbn; auto.
+  Qed.
+
+  Lemma thread_cons_buf_read_loop_mem_changed : forall st st' len addr read,
+    thread_cons_buf_read_loop_spec len addr st = Some (st', read) ->
+    exists msg,
+      Zlength msg = read /\
+      Zlength msg <= Z.max len 0 /\
+      FlatMem.storebytes st.(HP) addr (inj_bytes msg) = st'.(HP).
+  Proof.
+    unfold thread_cons_buf_read_loop_spec; intros * Hspec; destruct_spec Hspec.
+    apply cons_buf_read_loop_mem_changed in Hspec as (? & ? & ? & ?).
+    repeat (esplit; eauto); try lia.
+    rewrite <- Coqlib.Z_to_nat_max; auto.
+  Qed.
+
+  (** No user-visible events are generated. *)
+  Definition nil_trace_case t t' :=
+    let new := trace_of_ostrace (strip_common_prefix IOEvent_eq t t') in
+    t = common_prefix IOEvent_eq t t' /\
+    new = trace_of_ostrace nil.
+
+  (** At most one user-visible read event is generated. *)
   Definition getc_trace_case t t' ret :=
     let new := trace_of_ostrace (strip_common_prefix IOEvent_eq t t') in
     t = common_prefix IOEvent_eq t t' /\
     ((ret = -1 /\ new = trace_of_ostrace nil) \/
      (0 <= ret <= 255 /\ forall logIdx strIdx,
         new = trace_of_ostrace (IOEvGetc logIdx strIdx ret :: nil))).
+
+  (** At most one user-visible write event is generated. *)
+  Definition putc_trace_case t t' c ret :=
+    let new := trace_of_ostrace (strip_common_prefix IOEvent_eq t t') in
+    t = common_prefix IOEvent_eq t t' /\
+    ((ret = -1 /\ new = trace_of_ostrace nil) \/
+     (ret = c mod 256 /\ forall logIdx,
+        new = trace_of_ostrace (IOEvPutc logIdx c :: nil))).
 
   Lemma trace_of_ostrace_app : forall otr otr',
     let tr := trace_of_ostrace otr in
@@ -1333,16 +1438,38 @@ Section Invariants.
     destruct Hin as (? & ? & ? & ? & ?); eauto.
   Qed.
 
-  Lemma getc_trace_case_refl : forall st, getc_trace_case st st (-1).
+  Lemma nil_trace_getc_trace : forall t t',
+    nil_trace_case t t' <-> getc_trace_case t t' (-1).
+  Proof.
+    unfold nil_trace_case, getc_trace_case; intuition (auto; easy).
+  Qed.
+
+  Lemma nil_trace_putc_trace : forall t t' c,
+    nil_trace_case t t' <-> putc_trace_case t t' c (-1).
+  Proof.
+    unfold nil_trace_case, putc_trace_case; intuition auto.
+    pose proof (Z.mod_pos_bound c 256 ltac:(lia)); lia.
+  Qed.
+
+  Lemma nil_trace_case_refl : forall st, nil_trace_case st st.
   Proof.
     red; intros; unfold strip_common_prefix.
     rewrite common_prefix_full, leb_correct, skipn_exact_length; cbn; auto.
   Qed.
 
+  Local Hint Resolve nil_trace_case_refl.
+
+  Corollary getc_trace_case_refl : forall st, getc_trace_case st st (-1).
+  Proof. intros; rewrite <- nil_trace_getc_trace; auto. Qed.
+
+  Corollary putc_trace_case_refl : forall st c, putc_trace_case st st c (-1).
+  Proof. intros; rewrite <- nil_trace_putc_trace; auto. Qed.
+
   Local Hint Resolve getc_trace_case_refl.
+  Local Hint Resolve putc_trace_case_refl.
 
   Lemma getc_trace_case_trans : forall t t' t'' r,
-    getc_trace_case t t' (-1) ->
+    nil_trace_case t t' ->
     getc_trace_case t' t'' r ->
     getc_trace_case t t'' r.
   Proof.
@@ -1356,12 +1483,12 @@ Section Invariants.
     rewrite common_prefix_app, skipn_app1, skipn_exact_length in *;
       rewrite ?app_length; auto; cbn in *.
     rewrite trace_of_ostrace_app.
-    destruct Htr as [(? & ->) | ?], Htr' as [(? & ->) | ?]; subst; auto; easy.
+    rewrite Htr; destruct Htr' as [(? & ->) | ?]; subst; auto.
   Qed.
 
   Lemma getc_trace_case_trans' : forall t t' t'' r,
     getc_trace_case t t' r ->
-    getc_trace_case t' t'' (-1) ->
+    nil_trace_case t' t'' ->
     getc_trace_case t t'' r.
   Proof.
     intros * Htr Htr'; red.
@@ -1374,188 +1501,19 @@ Section Invariants.
     rewrite common_prefix_app, skipn_app1, skipn_exact_length in *;
       rewrite ?app_length; auto; cbn in *.
     rewrite trace_of_ostrace_app.
-    destruct Htr as [(? & ->) | (? & Heq)], Htr' as [(? & ->) | ?]; subst; auto; try easy.
-    rewrite Heq; cbn; auto; constructor.
+    rewrite Htr'; destruct Htr as [(? & ->) | (? & ->)]; subst; auto; constructor.
   Qed.
 
-  Lemma cons_intr_aux_getc_trace_case : forall st st',
-    cons_intr_aux st = Some st' ->
-    getc_trace_case st.(io_rx_log) st'.(io_rx_log) (-1).
+  Corollary nil_trace_case_trans : forall t t' t'',
+    nil_trace_case t t' ->
+    nil_trace_case t' t'' ->
+    nil_trace_case t t''.
   Proof.
-    unfold cons_intr_aux, getc_trace_case; intros * Hspec; destruct_spec Hspec.
-    - prename (Coqlib.zeq _ _ = _) into Htmp; clear Htmp.
-      destruct st; cbn in *; subst; cbn in *.
-      rewrite common_prefix_app, app_length, leb_correct by lia.
-      rewrite skipn_app1, skipn_exact_length; cbn; auto using mkRecvEvents_not_visible.
-    - prename (Coqlib.zeq _ _ = _) into Htmp; clear Htmp.
-      destruct st; cbn in *; subst; cbn in *.
-      rewrite common_prefix_app, app_length, leb_correct by lia.
-      rewrite skipn_app1, skipn_exact_length; cbn; auto using mkRecvEvents_not_visible.
+    intros * ?; rewrite !nil_trace_getc_trace; eauto using getc_trace_case_trans.
   Qed.
-
-  Lemma serial_intr_enable_aux_getc_trace_case : forall n st st',
-    serial_intr_enable_aux n st = Some st' ->
-    getc_trace_case st.(io_rx_log) st'.(io_rx_log) (-1).
-  Proof.
-    induction n; intros * Hspec; cbn -[cons_intr_aux] in Hspec; inj; auto.
-    destruct_spec Hspec; auto.
-    prename cons_intr_aux into Hspec'.
-    eapply getc_trace_case_trans; [eapply cons_intr_aux_getc_trace_case |]; eauto.
-  Qed.
-
-  Lemma serial_intr_enable_getc_trace_case : forall st st',
-    serial_intr_enable_spec st = Some st' ->
-    getc_trace_case st.(io_rx_log) st'.(io_rx_log) (-1).
-  Proof.
-    unfold serial_intr_enable_spec; intros * Hspec; destruct_spec Hspec.
-    prename serial_intr_enable_aux into Hspec.
-    eapply serial_intr_enable_aux_getc_trace_case in Hspec.
-    destruct st, r; auto.
-  Qed.
-
-  Lemma serial_intr_disable_aux_getc_trace_case : forall n mask st st',
-    serial_intr_disable_aux n mask st = Some st' ->
-    getc_trace_case st.(io_rx_log) st'.(io_rx_log) (-1).
-  Proof.
-    induction n; intros * Hspec; cbn -[cons_intr_aux] in Hspec; inj; auto.
-    destruct_spec Hspec; auto.
-    - eapply IHn in Hspec.
-      destruct st; auto.
-    - prename cons_intr_aux into Hspec'.
-      eapply cons_intr_aux_getc_trace_case in Hspec'.
-      eapply IHn in Hspec.
-      eapply getc_trace_case_trans; [| eapply Hspec]; eauto.
-      destruct st; auto.
-  Qed.
-
-  Lemma serial_intr_disable_getc_trace_case : forall st st',
-    serial_intr_disable_spec st = Some st' ->
-    getc_trace_case st.(io_rx_log) st'.(io_rx_log) (-1).
-  Proof.
-    unfold serial_intr_disable_spec; intros * Hspec; destruct_spec Hspec.
-    prename serial_intr_disable_aux into Hspec.
-    eapply serial_intr_disable_aux_getc_trace_case in Hspec.
-    destruct st, r; auto.
-  Qed.
-
-  Lemma thread_serial_intr_enable_getc_trace_case : forall st st',
-    thread_serial_intr_enable_spec st = Some st' ->
-    getc_trace_case st.(io_rx_log) st'.(io_rx_log) (-1).
-  Proof.
-    unfold thread_serial_intr_enable_spec; intros * Hspec; destruct_spec Hspec.
-    eapply serial_intr_enable_getc_trace_case; eauto.
-  Qed.
-
-  Lemma thread_serial_intr_disable_getc_trace_case : forall st st',
-    thread_serial_intr_disable_spec st = Some st' ->
-    getc_trace_case st.(io_rx_log) st'.(io_rx_log) (-1).
-  Proof.
-    unfold thread_serial_intr_disable_spec; intros * Hspec; destruct_spec Hspec.
-    eapply serial_intr_disable_getc_trace_case; eauto.
-  Qed.
-
-  Lemma uctx_set_retval1_getc_trace_case : forall st v st',
-    uctx_set_retval1_spec v st = Some st' ->
-    getc_trace_case st.(io_rx_log) st'.(io_rx_log) (-1).
-  Proof.
-    unfold uctx_set_retval1_spec; intros * Hspec; destruct_spec Hspec.
-    destruct st; auto.
-  Qed.
-
-  Lemma uctx_set_errno_getc_trace_case : forall st e st',
-    uctx_set_errno_spec e st = Some st' ->
-    getc_trace_case st.(io_rx_log) st'.(io_rx_log) (-1).
-  Proof.
-    unfold uctx_set_errno_spec; intros * Hspec; destruct_spec Hspec.
-    destruct st; auto.
-  Qed.
-
-  Lemma cons_buf_read_getc_trace_case : forall st st' c,
-    valid_trace st ->
-    cons_buf_read_spec st = Some (st', c) ->
-    getc_trace_case st.(io_rx_log) st'.(io_rx_log) c /\ -1 <= c <= 255.
-  Proof.
-    unfold cons_buf_read_spec; intros * Hvalid Hspec; destruct_spec Hspec.
-    { split; eauto; lia. }
-    prename (cons_buf _ = _) into Hcons.
-    destruct st; cbn in *; unfold getc_trace_case.
-    unfold strip_common_prefix.
-    rewrite common_prefix_app, app_length, leb_correct by lia.
-    rewrite skipn_app1, skipn_exact_length; cbn; auto.
-    inv Hvalid; cbn in *.
-    rewrite vt_trace_console0 in Hcons.
-    assert (Hin: In (c, z0, n) (compute_console io_rx_log)) by (rewrite Hcons; cbn; auto).
-    apply in_console_in_trace in Hin.
-    apply in_split in Hin; destruct Hin as (? & ? & ?); subst.
-    edestruct vt_trace_serial0 as (_ & Henv); eauto.
-    destruct (SerialEnv z0) eqn:Hrange; try easy.
-    apply SerialRecv_in_range in Hrange.
-    rewrite Forall_forall in Hrange.
-    apply nth_error_In in Henv.
-    apply Hrange in Henv.
-    split; auto; lia.
-  Qed.
-
-  Lemma thread_cons_buf_read_getc_trace_case : forall st st' c,
-    valid_trace st ->
-    thread_cons_buf_read_spec st = Some (st', c) ->
-    getc_trace_case st.(io_rx_log) st'.(io_rx_log) c /\ -1 <= c <= 255.
-  Proof.
-    unfold thread_cons_buf_read_spec; intros * Hvalid Hspec; destruct_spec Hspec.
-    eapply cons_buf_read_getc_trace_case; eauto.
-  Qed.
-
-  Lemma sys_getc_trace_case : forall st st' ret,
-    valid_trace st ->
-    sys_getc_spec st = Some st' ->
-    get_sys_ret st' = Vint ret ->
-    getc_trace_case st.(io_rx_log) st'.(io_rx_log) (Int.signed ret).
-  Proof.
-    unfold sys_getc_spec, get_sys_ret; intros * Hvalid Hspec Hret; destruct_spec Hspec.
-    prename thread_serial_intr_disable_spec into Hspec1.
-    prename thread_cons_buf_read_spec into Hspec2.
-    prename thread_serial_intr_enable_spec into Hspec3.
-    prename uctx_set_retval1_spec into Hspec4.
-    assert (valid_trace r) by eauto using thread_serial_intr_disable_preserve_valid_trace.
-    assert (valid_trace r0) by eauto using thread_cons_buf_read_preserve_valid_trace.
-    assert (valid_trace r1) by eauto using thread_serial_intr_enable_preserve_valid_trace.
-    assert (valid_trace r2) by eauto using uctx_set_retval1_preserve_valid_trace.
-    assert (valid_trace st') by eauto using uctx_set_errno_preserve_valid_trace.
-    eapply thread_serial_intr_disable_getc_trace_case in Hspec1 as Htr.
-    eapply thread_cons_buf_read_getc_trace_case in Hspec2 as (Htr1 & Hrange); auto.
-    eapply thread_serial_intr_enable_getc_trace_case in Hspec3 as Htr2.
-    eapply uctx_set_retval1_getc_trace_case in Hspec4 as Htr3.
-    eapply uctx_set_errno_getc_trace_case in Hspec as Htr4.
-    eapply getc_trace_case_trans'; [| eapply Htr4].
-    eapply getc_trace_case_trans'; [| eapply Htr3].
-    eapply getc_trace_case_trans'; [| eapply Htr2].
-    eapply getc_trace_case_trans; [eapply Htr |]; eauto.
-    enough (z = Int.signed ret); subst; auto.
-    clear -Hspec Hspec4 Hret Htr1 Hrange.
-    unfold uctx_set_retval1_spec in Hspec4; destruct_spec Hspec4.
-    unfold uctx_set_errno_spec in Hspec; destruct_spec Hspec.
-    destruct r1; cbn in *; subst.
-    repeat (rewrite ZMap.gss in Hret || rewrite ZMap.gso in Hret by easy); inj.
-    rewrite Int.signed_repr; auto; cbn; lia.
-  Qed.
-
-  Definition putc_trace_case t t' c ret :=
-    let new := trace_of_ostrace (strip_common_prefix IOEvent_eq t t') in
-    t = common_prefix IOEvent_eq t t' /\
-    ((ret = -1 /\ new = trace_of_ostrace nil) \/
-     (ret = c mod 256 /\ forall logIdx,
-        new = trace_of_ostrace (IOEvPutc logIdx c :: nil))).
-
-  Lemma putc_trace_case_refl : forall st c, putc_trace_case st st c (-1).
-  Proof.
-    red; intros; unfold strip_common_prefix.
-    rewrite common_prefix_full, leb_correct, skipn_exact_length; cbn; auto.
-  Qed.
-
-  Local Hint Resolve putc_trace_case_refl.
 
   Lemma putc_trace_case_trans : forall t t' t'' c r,
-    putc_trace_case t t' c (-1) ->
+    nil_trace_case t t' ->
     putc_trace_case t' t'' c r ->
     putc_trace_case t t'' c r.
   Proof.
@@ -1570,12 +1528,12 @@ Section Invariants.
       rewrite ?app_length; auto; cbn in *.
     rewrite trace_of_ostrace_app.
     pose proof (Z.mod_pos_bound c 256 ltac:(lia)).
-    destruct Htr as [(? & ->) | (? & ?)], Htr' as [(? & ->) | ?]; subst; auto; exfalso; lia.
+    rewrite Htr; destruct Htr' as [(? & ->) | ?]; subst; auto.
   Qed.
 
   Lemma putc_trace_case_trans' : forall t t' t'' c r,
     putc_trace_case t t' c r ->
-    putc_trace_case t' t'' c (-1) ->
+    nil_trace_case t' t'' ->
     putc_trace_case t t'' c r.
   Proof.
     intros * Htr Htr'; red.
@@ -1589,120 +1547,120 @@ Section Invariants.
       rewrite ?app_length; auto; cbn in *.
     rewrite trace_of_ostrace_app.
     pose proof (Z.mod_pos_bound c 256 ltac:(lia)).
-    destruct Htr as [(? & ->) | (? & Heq)], Htr' as [(? & ->) | (? & ?)]; subst; auto; try easy.
-    rewrite Heq; cbn; auto; constructor.
-    exfalso; lia.
+    rewrite Htr'; destruct Htr as [(? & ->) | (? & ->)]; subst; auto.
   Qed.
 
-  Lemma cons_intr_aux_putc_trace_case : forall st st' c,
+  Lemma cons_intr_aux_trace_case : forall st st',
     cons_intr_aux st = Some st' ->
-    putc_trace_case st.(io_tx_log) st'.(io_tx_log) c (-1).
+    nil_trace_case st.(io_log) st'.(io_log).
   Proof.
-    unfold cons_intr_aux, putc_trace_case; intros * Hspec; destruct_spec Hspec.
+    unfold cons_intr_aux, nil_trace_case; intros * Hspec; destruct_spec Hspec.
     - prename (Coqlib.zeq _ _ = _) into Htmp; clear Htmp.
       destruct st; cbn in *; subst; cbn in *.
-      rewrite common_prefix_full, leb_correct, skipn_exact_length by lia; auto.
+      rewrite common_prefix_app, app_length, leb_correct by lia.
+      rewrite skipn_app1, skipn_exact_length; cbn; auto using mkRecvEvents_not_visible.
     - prename (Coqlib.zeq _ _ = _) into Htmp; clear Htmp.
       destruct st; cbn in *; subst; cbn in *.
-      rewrite common_prefix_full, leb_correct, skipn_exact_length by lia; auto.
+      rewrite common_prefix_app, app_length, leb_correct by lia.
+      rewrite skipn_app1, skipn_exact_length; cbn; auto using mkRecvEvents_not_visible.
   Qed.
 
-  Lemma serial_intr_enable_aux_putc_trace_case : forall n st st' c,
+  Lemma serial_intr_enable_aux_trace_case : forall n st st',
     serial_intr_enable_aux n st = Some st' ->
-    putc_trace_case st.(io_tx_log) st'.(io_tx_log) c (-1).
+    nil_trace_case st.(io_log) st'.(io_log).
   Proof.
     induction n; intros * Hspec; cbn -[cons_intr_aux] in Hspec; inj; auto.
     destruct_spec Hspec; auto.
     prename cons_intr_aux into Hspec'.
-    eapply putc_trace_case_trans; [eapply cons_intr_aux_putc_trace_case |]; eauto.
+    eapply nil_trace_case_trans; [eapply cons_intr_aux_trace_case |]; eauto.
   Qed.
 
-  Lemma serial_intr_enable_putc_trace_case : forall st st' c,
+  Lemma serial_intr_enable_trace_case : forall st st',
     serial_intr_enable_spec st = Some st' ->
-    putc_trace_case st.(io_tx_log) st'.(io_tx_log) c (-1).
+    nil_trace_case st.(io_log) st'.(io_log).
   Proof.
     unfold serial_intr_enable_spec; intros * Hspec; destruct_spec Hspec.
     prename serial_intr_enable_aux into Hspec.
-    eapply serial_intr_enable_aux_putc_trace_case in Hspec.
-    destruct st, r; eauto.
+    eapply serial_intr_enable_aux_trace_case in Hspec.
+    destruct st, r; auto.
   Qed.
 
-  Lemma serial_intr_putc_trace_case : forall d d' tr,
-    serial_intr d = (d', tr) ->
-    trace_of_ostrace tr = TEnd.
-  Proof.
-    unfold serial_intr; intros * Hspec; destruct_spec Hspec.
-    destruct o; auto.
-  Qed.
-
-  Lemma serial_intr_disable_aux_putc_trace_case : forall n mask st st' c,
+  Lemma serial_intr_disable_aux_trace_case : forall n mask st st',
     serial_intr_disable_aux n mask st = Some st' ->
-    putc_trace_case st.(io_tx_log) st'.(io_tx_log) c (-1).
+    nil_trace_case st.(io_log) st'.(io_log).
   Proof.
     induction n; intros * Hspec; cbn -[cons_intr_aux] in Hspec; inj; auto.
     destruct_spec Hspec; auto.
     - eapply IHn in Hspec.
-      destruct st; cbn in *.
+      destruct st, st'; cbn in *.
       prename serial_intr into Hspec'.
       unfold serial_intr in Hspec'; destruct_spec Hspec'.
-      destruct o; cbn in *.
-      + eapply putc_trace_case_trans; [| eauto].
-        red; unfold strip_common_prefix.
-        rewrite !app_length, leb_correct by lia.
-        rewrite common_prefix_app, skipn_app1, skipn_exact_length; auto.
-      + rewrite app_nil_r in Hspec; auto.
+      destruct o; [| rewrite app_nil_r in Hspec; auto].
+      destruct Hspec as (Heq & Htr).
+      apply common_prefix_correct in Heq.
+      destruct Heq; subst; red.
+      rewrite <- Htr; unfold strip_common_prefix.
+      rewrite common_prefix_app, <- app_assoc, common_prefix_app.
+      rewrite !app_length, !leb_correct by (cbn; lia).
+      rewrite skipn_app1, skipn_exact_length; auto.
+      rewrite (app_assoc io_log), <- app_length.
+      rewrite skipn_app1, skipn_exact_length; cbn; auto.
     - prename cons_intr_aux into Hspec'.
-      eapply cons_intr_aux_putc_trace_case in Hspec'.
+      eapply cons_intr_aux_trace_case in Hspec'.
       eapply IHn in Hspec.
-      eapply putc_trace_case_trans; [| eapply Hspec]; eauto.
-      destruct st; cbn in *.
+      eapply nil_trace_case_trans; [| eapply Hspec]; eauto.
+      destruct st, r, st'; cbn in *.
       prename serial_intr into Hspec''.
       unfold serial_intr in Hspec''; destruct_spec Hspec''.
-      destruct o; cbn in *.
-      + eapply putc_trace_case_trans; [| eauto].
-        red; unfold strip_common_prefix.
-        rewrite !app_length, leb_correct by lia.
-        rewrite common_prefix_app, skipn_app1, skipn_exact_length; auto.
-      + rewrite app_nil_r in Hspec'; auto.
+      destruct o; [| rewrite app_nil_r in Hspec'; auto].
+      destruct Hspec' as (Heq & Htr).
+      apply common_prefix_correct in Heq.
+      destruct Heq; subst; red.
+      rewrite <- Htr; unfold strip_common_prefix.
+      rewrite common_prefix_app, <- app_assoc, common_prefix_app.
+      rewrite !app_length, !leb_correct by (cbn; lia).
+      rewrite skipn_app1, skipn_exact_length; auto.
+      rewrite (app_assoc io_log), <- app_length.
+      rewrite skipn_app1, skipn_exact_length; cbn; auto.
   Qed.
 
-  Lemma serial_intr_disable_putc_trace_case : forall st st' c,
+  Lemma serial_intr_disable_trace_case : forall st st',
     serial_intr_disable_spec st = Some st' ->
-    putc_trace_case st.(io_tx_log) st'.(io_tx_log) c (-1).
+    nil_trace_case st.(io_log) st'.(io_log).
   Proof.
     unfold serial_intr_disable_spec; intros * Hspec; destruct_spec Hspec.
     prename serial_intr_disable_aux into Hspec.
-    eapply serial_intr_disable_aux_putc_trace_case in Hspec.
-    destruct st, r; eauto.
+    eapply serial_intr_disable_aux_trace_case in Hspec.
+    destruct st, r; auto.
   Qed.
 
-  Lemma thread_serial_intr_enable_putc_trace_case : forall st st' c,
+  Lemma thread_serial_intr_enable_trace_case : forall st st',
     thread_serial_intr_enable_spec st = Some st' ->
-    putc_trace_case st.(io_tx_log) st'.(io_tx_log) c (-1).
+    nil_trace_case st.(io_log) st'.(io_log).
   Proof.
     unfold thread_serial_intr_enable_spec; intros * Hspec; destruct_spec Hspec.
-    eapply serial_intr_enable_putc_trace_case; eauto.
+    eapply serial_intr_enable_trace_case; eauto.
   Qed.
 
-  Lemma thread_serial_intr_disable_putc_trace_case : forall st st' c,
+  Lemma thread_serial_intr_disable_trace_case : forall st st',
     thread_serial_intr_disable_spec st = Some st' ->
-    putc_trace_case st.(io_tx_log) st'.(io_tx_log) c (-1).
+    nil_trace_case st.(io_log) st'.(io_log).
   Proof.
     unfold thread_serial_intr_disable_spec; intros * Hspec; destruct_spec Hspec.
-    eapply serial_intr_disable_putc_trace_case; eauto.
+    eapply serial_intr_disable_trace_case; eauto.
   Qed.
 
-  Lemma uctx_set_retval1_putc_trace_case : forall st v st' c,
+  Lemma uctx_set_retval1_trace_case : forall st v st',
     uctx_set_retval1_spec v st = Some st' ->
-    putc_trace_case st.(io_tx_log) st'.(io_tx_log) c (-1).
+    nil_trace_case st.(io_log) st'.(io_log).
   Proof.
     unfold uctx_set_retval1_spec; intros * Hspec; destruct_spec Hspec.
     destruct st; auto.
   Qed.
 
-  Lemma uctx_set_errno_putc_trace_case : forall st e st' c,
+  Lemma uctx_set_errno_trace_case : forall st e st',
     uctx_set_errno_spec e st = Some st' ->
-    putc_trace_case st.(io_tx_log) st'.(io_tx_log) c (-1).
+    nil_trace_case st.(io_log) st'.(io_log).
   Proof.
     unfold uctx_set_errno_spec; intros * Hspec; destruct_spec Hspec.
     destruct st; auto.
@@ -1710,7 +1668,7 @@ Section Invariants.
 
   Lemma serial_putc_putc_trace_case : forall st c st' r,
     serial_putc_spec c st = Some (st', r) ->
-    putc_trace_case st.(io_tx_log) st'.(io_tx_log) c r.
+    putc_trace_case st.(io_log) st'.(io_log) c r.
   Proof.
     unfold serial_putc_spec; intros * Hspec; destruct_spec Hspec; eauto.
     - prename (Coqlib.zeq _ _ = _) into Htmp; clear Htmp.
@@ -1725,19 +1683,88 @@ Section Invariants.
       rewrite common_prefix_app, skipn_app1, skipn_exact_length; auto.
   Qed.
 
-  Lemma thread_serial_putc_putc_trace_case : forall st c st' r,
+  Lemma cons_buf_read_trace_case : forall st st' c,
+    valid_trace st ->
+    cons_buf_read_spec st = Some (st', c) ->
+    getc_trace_case st.(io_log) st'.(io_log) c /\ -1 <= c <= 255.
+  Proof.
+    unfold cons_buf_read_spec; intros * Hvalid Hspec; destruct_spec Hspec.
+    { split; eauto; lia. }
+    prename (cons_buf _ = _) into Hcons.
+    destruct st; cbn in *; unfold getc_trace_case.
+    unfold strip_common_prefix.
+    rewrite common_prefix_app, app_length, leb_correct by lia.
+    rewrite skipn_app1, skipn_exact_length; cbn; auto.
+    inv Hvalid; cbn in *.
+    rewrite vt_trace_console0 in Hcons.
+    assert (Hin: In (c, z0, n) (compute_console io_log)) by (rewrite Hcons; cbn; auto).
+    apply in_console_in_trace in Hin.
+    apply in_split in Hin; destruct Hin as (? & ? & ?); subst.
+    edestruct vt_trace_serial0 as (_ & Henv); eauto.
+    destruct (SerialEnv z0) eqn:Hrange; try easy.
+    apply SerialRecv_in_range in Hrange.
+    rewrite Forall_forall in Hrange.
+    apply nth_error_In in Henv.
+    apply Hrange in Henv.
+    split; auto; lia.
+  Qed.
+
+  Lemma thread_serial_putc_trace_case : forall st c st' r,
     thread_serial_putc_spec c st = Some (st', r) ->
-    putc_trace_case st.(io_tx_log) st'.(io_tx_log) c r.
+    putc_trace_case st.(io_log) st'.(io_log) c r.
   Proof.
     unfold thread_serial_putc_spec; intros * Hspec; destruct_spec Hspec.
     eapply serial_putc_putc_trace_case; eauto.
+  Qed.
+
+  Lemma thread_cons_buf_read_trace_case : forall st st' c,
+    valid_trace st ->
+    thread_cons_buf_read_spec st = Some (st', c) ->
+    getc_trace_case st.(io_log) st'.(io_log) c /\ -1 <= c <= 255.
+  Proof.
+    unfold thread_cons_buf_read_spec; intros * Hvalid Hspec; destruct_spec Hspec.
+    eapply cons_buf_read_trace_case; eauto.
+  Qed.
+
+  Lemma sys_getc_trace_case : forall st st' ret,
+    valid_trace st ->
+    sys_getc_spec st = Some st' ->
+    get_sys_ret st' = Vint ret ->
+    getc_trace_case st.(io_log) st'.(io_log) (Int.signed ret).
+  Proof.
+    unfold sys_getc_spec, get_sys_ret; intros * Hvalid Hspec Hret; destruct_spec Hspec.
+    prename thread_serial_intr_disable_spec into Hspec1.
+    prename thread_cons_buf_read_spec into Hspec2.
+    prename thread_serial_intr_enable_spec into Hspec3.
+    prename uctx_set_retval1_spec into Hspec4.
+    assert (valid_trace r) by eauto using thread_serial_intr_disable_preserve_valid_trace.
+    assert (valid_trace r0) by eauto using thread_cons_buf_read_preserve_valid_trace.
+    assert (valid_trace r1) by eauto using thread_serial_intr_enable_preserve_valid_trace.
+    assert (valid_trace r2) by eauto using uctx_set_retval1_preserve_valid_trace.
+    assert (valid_trace st') by eauto using uctx_set_errno_preserve_valid_trace.
+    eapply thread_serial_intr_disable_trace_case in Hspec1 as Htr.
+    eapply thread_cons_buf_read_trace_case in Hspec2 as (Htr1 & Hrange); auto.
+    eapply thread_serial_intr_enable_trace_case in Hspec3 as Htr2.
+    eapply uctx_set_retval1_trace_case in Hspec4 as Htr3.
+    eapply uctx_set_errno_trace_case in Hspec as Htr4.
+    eapply getc_trace_case_trans'; [| eapply Htr4].
+    eapply getc_trace_case_trans'; [| eapply Htr3].
+    eapply getc_trace_case_trans'; [| eapply Htr2].
+    eapply getc_trace_case_trans; [eapply Htr |]; eauto.
+    enough (z = Int.signed ret); subst; auto.
+    clear -Hspec Hspec4 Hret Htr1 Hrange.
+    unfold uctx_set_retval1_spec in Hspec4; destruct_spec Hspec4.
+    unfold uctx_set_errno_spec in Hspec; destruct_spec Hspec.
+    destruct r1; cbn in *; subst.
+    repeat (rewrite ZMap.gss in Hret || rewrite ZMap.gso in Hret by easy); inj.
+    rewrite Int.signed_repr; auto; cbn; lia.
   Qed.
 
   Lemma sys_putc_trace_case : forall st st' c ret,
     sys_putc_spec st = Some st' ->
     get_sys_arg1 st = Vint c ->
     get_sys_ret st' = Vint ret ->
-    putc_trace_case st.(io_tx_log) st'.(io_tx_log) (Int.unsigned c) (Int.signed ret).
+    putc_trace_case st.(io_log) st'.(io_log) (Int.unsigned c) (Int.signed ret).
   Proof.
     unfold sys_putc_spec, get_sys_arg1, get_sys_ret; intros * Hspec Harg Hret; destruct_spec Hspec.
     prename thread_serial_intr_disable_spec into Hspec1.
@@ -1745,11 +1772,11 @@ Section Invariants.
     prename thread_serial_intr_enable_spec into Hspec3.
     prename uctx_set_retval1_spec into Hspec4.
     prename uctx_arg2_spec into Hspec5.
-    eapply thread_serial_intr_disable_putc_trace_case in Hspec1 as Htr.
-    eapply thread_serial_putc_putc_trace_case in Hspec2 as (Htr1 & Hrange); auto.
-    eapply thread_serial_intr_enable_putc_trace_case in Hspec3 as Htr2.
-    eapply uctx_set_retval1_putc_trace_case in Hspec4 as Htr3.
-    eapply uctx_set_errno_putc_trace_case in Hspec as Htr4.
+    eapply thread_serial_intr_disable_trace_case in Hspec1 as Htr.
+    eapply thread_serial_putc_trace_case in Hspec2 as (Htr1 & Hrange); auto.
+    eapply thread_serial_intr_enable_trace_case in Hspec3 as Htr2.
+    eapply uctx_set_retval1_trace_case in Hspec4 as Htr3.
+    eapply uctx_set_errno_trace_case in Hspec as Htr4.
     eapply putc_trace_case_trans'; [| eapply Htr4].
     eapply putc_trace_case_trans'; [| eapply Htr3].
     eapply putc_trace_case_trans'; [| eapply Htr2].
@@ -1946,6 +1973,7 @@ Section Invariants.
 End Invariants.
 
 Section SpecsCorrect.
+  Import Mem.
 
   Context `{ThreadsConfigurationOps}.
 
@@ -1960,17 +1988,49 @@ Section SpecsCorrect.
     (* The new itree 'consumed' the OS-generated trace *)
     consume_trace z0 z t.
 
-  Import Mem.
-  Variable block_to_addr : block -> Z.
+  Record block_to_addr := {
+    b2a_map : block -> Z;
+    b2a_disjoint : forall m b1 b2 ofs1 ofs2,
+      b1 <> b2 ->
+      perm m b1 ofs1 Cur Readable ->
+      perm m b2 ofs2 Cur Readable ->
+      b2a_map b1 + ofs1 <> b2a_map b2 + ofs2;
+  }.
+  Variable b2a : block_to_addr.
+
+  Lemma block_to_addr_range_perm_disjoint : forall len m b1 b2 ofs1 ofs2,
+    let addr1 := b2a.(b2a_map) b1 + ofs1 in
+    let addr2 := b2a.(b2a_map) b2 + ofs2 in
+    b1 <> b2 ->
+    perm m b1 ofs1 Cur Readable ->
+    range_perm m b2 ofs2 (ofs2 + Z.of_nat len) Cur Readable ->
+    addr1 < addr2 \/ addr2 + Z.of_nat len <= addr1.
+  Proof.
+    induction len; cbn -[Z.of_nat]; intros * Hblock Hperm1 Hperm2; hnf in Hperm2; [lia |].
+    edestruct IHlen; eauto.
+    { hnf; intros; apply Hperm2; lia. }
+    right.
+    eapply (b2a.(b2a_disjoint) m b1 b2 ofs1 (ofs2 + Z.of_nat len)) in Hperm1; eauto; try lia.
+    eapply Hperm2; lia.
+  Qed.
+
+  Definition R_mem (m : mem) (f : flatmem) : Prop :=
+    forall b ofs,
+      let addr := b2a.(b2a_map) b + ofs in
+      perm m b ofs Cur Readable ->
+      match ZMap.get ofs (m.(mem_contents) !! b) with
+      | Fragment _ _ _ => True
+      | v => v = FlatMem.FlatMem2MemVal (ZMap.get addr f)
+      end.
 
   Definition mem_to_flatmem (f : flatmem) (m : mem) (b : block) (ofs len : Z) : flatmem :=
     let contents := getN (Z.to_nat len) ofs (m.(mem_contents) !! b) in
-    let addr := block_to_addr b + ofs in
+    let addr := b2a.(b2a_map) b + ofs in
     FlatMem.setN contents addr f.
 
   Program Definition flatmem_to_mem (f : flatmem) (m : mem) (b : block) (ofs len : Z) : mem :=
     let (cont, acc, nxt, amax, nxt_no, _) := m in
-    let addr := block_to_addr b + ofs in
+    let addr := b2a.(b2a_map) b + ofs in
     let bytes := FlatMem.getN (Z.to_nat len) addr f in
     let contents := setN bytes ofs (cont !! b) in
     mkmem (PMap.set b contents cont) acc nxt amax nxt_no _.
@@ -1980,24 +2040,121 @@ Section SpecsCorrect.
     - rewrite PMap.gso; auto.
   Defined.
 
+  Local Transparent storebytes.
+  Theorem range_perm_storebytes_less : forall m1 b ofs bytes len,
+    Zlength bytes <= len ->
+    range_perm m1 b ofs (ofs + len) Cur Writable ->
+    { m2 : mem | storebytes m1 b ofs bytes = Some m2 }.
+  Proof.
+    unfold storebytes; intros * Hlen Hperm.
+    destruct range_perm_dec as [? | Hperm']; eauto.
+    exfalso; eapply Hperm'.
+    rewrite <- Zlength_correct.
+    red; intros; apply Hperm; lia.
+  Defined.
+  Local Opaque storebytes.
+
+  Lemma flatmem_to_mem_contents : forall f m b ofs len,
+    let addr := b2a.(b2a_map) b + ofs in
+    let bytes := FlatMem.getN (Z.to_nat len) addr f in
+    let contents := setN bytes ofs (m.(mem_contents) !! b) in
+    mem_contents (flatmem_to_mem f m b ofs len) = PMap.set b contents m.(mem_contents).
+  Proof.
+    unfold flatmem_to_mem; intros *; destruct m; cbn; auto.
+  Qed.
+
+  Lemma flatmem_to_mem_perm : forall f m b ofs len b' ofs' k p,
+    perm (flatmem_to_mem f m b ofs len) b' ofs' k p <-> perm m b' ofs' k p.
+  Proof.
+    unfold perm, flatmem_to_mem; intros *; destruct m; cbn; easy.
+  Qed.
+
+  Lemma flatmem_to_mem_nextblock : forall f m b ofs len,
+    nextblock (flatmem_to_mem f m b ofs len) = nextblock m.
+  Proof.
+    unfold flatmem_to_mem; intros *; destruct m; cbn; auto.
+  Qed.
+
+  Import mem_lessdef.
+  Lemma flatmem_to_mem_storebytes_equiv : forall f m b ofs vs m',
+    let addr := b2a.(b2a_map) b + ofs in
+    storebytes m b ofs (inj_bytes vs) = Some m' ->
+    mem_equiv (flatmem_to_mem (FlatMem.storebytes f addr (inj_bytes vs)) m b ofs (Zlength vs)) m'.
+  Proof.
+    intros * Hm'; subst addr; apply mem_lessdef_equiv; repeat split.
+    - intros * Hload.
+      edestruct loadbytes_inj as (? & Hload' & ?); eauto.
+      3: rewrite Z.add_0_r in Hload'; eauto.
+      2: auto.
+      unfold inject_id; constructor; intros * ?; inj.
+      + rewrite Z.add_0_r, flatmem_to_mem_perm; eauto using perm_storebytes_1.
+      + exists 0; auto.
+      + intros Hperm; rewrite Z.add_0_r.
+        apply storebytes_mem_contents in Hm' as ->.
+        unfold FlatMem.storebytes.
+        rewrite flatmem_to_mem_contents, ZtoNat_Zlength, <- length_inj_bytes, FlatMem.getN_setN.
+        apply mem_lemmas.memval_inject_id_refl.
+    - intros * Hperm.
+      rewrite flatmem_to_mem_perm in Hperm.
+      eapply perm_storebytes_1; eauto.
+    - erewrite flatmem_to_mem_nextblock, <- nextblock_storebytes; eauto; lia.
+    - intros * Hload.
+      edestruct loadbytes_inj as (? & Hload' & ?); eauto.
+      3: rewrite Z.add_0_r in Hload'; eauto.
+      2: auto.
+      unfold inject_id; constructor; intros * ?; inj.
+      + rewrite Z.add_0_r, flatmem_to_mem_perm; eauto using perm_storebytes_2.
+      + exists 0; auto.
+      + intros Hperm; rewrite Z.add_0_r.
+        apply storebytes_mem_contents in Hm' as ->.
+        unfold FlatMem.storebytes.
+        rewrite flatmem_to_mem_contents, ZtoNat_Zlength, <- length_inj_bytes, FlatMem.getN_setN.
+        apply mem_lemmas.memval_inject_id_refl.
+    - intros * Hperm.
+      rewrite flatmem_to_mem_perm.
+      eapply perm_storebytes_2 in Hperm; eauto.
+    - erewrite flatmem_to_mem_nextblock, nextblock_storebytes; eauto; lia.
+  Qed.
+
+  Lemma setN_inside : forall vs p q c,
+    p <= q < p + Z.of_nat (length vs) ->
+    ZMap.get q (setN vs p c) = nth (Z.to_nat (q - p)) vs Undef.
+  Proof.
+    clear.
+    induction vs; cbn -[Z.of_nat]; intros * Hrange; [lia |].
+    assert (p = q \/ p < q) as [? | ?] by lia; subst.
+    { rewrite Z.sub_diag, setN_outside, ZMap.gss; auto; lia. }
+    rewrite IHvs; auto; try lia.
+    replace (q - (p + 1)) with (q - p - 1) by lia.
+    destruct (Z.to_nat (q - p)) eqn:Hsub.
+    { apply (f_equal Z.of_nat) in Hsub.
+      rewrite Z2Nat.id in Hsub; lia.
+    }
+    apply (f_equal Z.of_nat) in Hsub.
+    rewrite Z2Nat.id in Hsub; try lia.
+    rewrite Hsub, Z2Nat.inj_sub, Nat2Z.id; try lia.
+    cbn; rewrite Nat.sub_0_r; auto.
+  Qed.
+
   Record R_sys_getc_correct k z m st st' ret := {
     (* New itree is old k applied to result, or same as old itree if nothing
        to read *)
-    getc_z' := if 0 <=? Int.signed ret then k ret else z;
+    getc_z' := if 0 <=? Int.signed ret then k (Byte.repr (Int.signed ret)) else z;
 
     (* Post condition holds on new state, itree, and result *)
     getc_post_ok : getchar_post' m m ret (k, z) getc_z';
     (* The itrees and OS traces agree on the external events *)
-    getc_itree_trace_ok : trace_itree_match z getc_z' st.(io_rx_log) st'.(io_rx_log);
+    getc_itree_trace_ok : trace_itree_match z getc_z' st.(io_log) st'.(io_log);
     (* The new trace is valid *)
     getc_trace_ok : valid_trace st';
     (* The memory is unchanged *)
-    getc_mem_ok : st.(HP) = st'.(HP)
+    getc_mem_ok : R_mem m st'.(HP);
   }.
 
   Lemma sys_getc_correct k z m st st' :
     (* Initial trace is valid *)
     valid_trace st ->
+    R_mem m st.(HP) ->
     (* Pre condition holds *)
     getchar_pre' m k z ->
     (* sys_getc returns some state *)
@@ -2006,13 +2163,13 @@ Section SpecsCorrect.
       get_sys_ret st' = Vint ret /\
       R_sys_getc_correct k z m st st' ret.
   Proof.
-    unfold getchar_pre', get_sys_ret; intros Hvalid Hpre Hspec.
+    unfold getchar_pre', get_sys_ret; intros Hvalid HRmem Hpre Hspec.
     apply sys_getc_preserve_valid_trace in Hspec as Hvalid'; auto.
     apply sys_getc_mem_unchanged in Hspec as Hmem.
     pose proof Hspec as Htrace_case.
     unfold sys_getc_spec in Hspec; destruct_spec Hspec.
     prename (thread_cons_buf_read_spec) into Hread.
-    apply thread_cons_buf_read_getc_trace_case in Hread as (_ & ?).
+    apply thread_cons_buf_read_trace_case in Hread as (_ & ?).
     2: eapply (thread_serial_intr_disable_preserve_valid_trace st); eauto.
     unfold uctx_set_errno_spec in Hspec; destruct_spec Hspec.
     prename (uctx_set_retval1_spec) into Hspec.
@@ -2047,34 +2204,34 @@ Section SpecsCorrect.
     (* Post condition holds on new state, itree, and result *)
     putc_post_ok : putchar_post m m ret (c, k) putc_z';
     (* The itrees and OS traces agree on the external events *)
-    putc_itree_trace_ok : trace_itree_match z putc_z' st.(io_tx_log) st'.(io_tx_log);
+    putc_itree_trace_ok : trace_itree_match z putc_z' st.(io_log) st'.(io_log);
     (* The new trace is valid *)
-    (* TODO: have to define valid trace condition for putc *)
     putc_trace_ok : valid_trace st';
     (* The memory is unchanged *)
-    putc_mem_ok : st.(HP) = st'.(HP)
+    putc_mem_ok : R_mem m st'.(HP);
   }.
 
   Lemma sys_putc_correct c k z m st st' :
     (* Initial trace is valid *)
     valid_trace st ->
+    R_mem m st.(HP) ->
     (* Pre condition holds *)
     putchar_pre m (c, k) z ->
     (* c is passed as an argument *)
-    get_sys_arg1 st = Vint c ->
+    get_sys_arg1 st = functional_base.Vubyte c ->
     (* sys_putc returns some state *)
     sys_putc_spec st = Some st' ->
     exists ret,
       get_sys_ret st' = Vint ret /\
       R_sys_putc_correct c k z m st st' ret.
   Proof.
-    unfold putchar_pre, get_sys_arg1, get_sys_ret; intros Hvalid Hpre Harg Hspec.
+    unfold putchar_pre, get_sys_arg1, get_sys_ret; intros Hvalid HRmem Hpre Harg Hspec.
     apply sys_putc_mem_unchanged in Hspec as Hmem.
     pose proof (sys_putc_preserve_valid_trace _ _ Hvalid Hspec).
     pose proof Hspec as Htrace_case.
     unfold sys_putc_spec in Hspec; destruct_spec Hspec.
     prename (thread_serial_putc_spec) into Hput.
-    apply thread_serial_putc_putc_trace_case in Hput.
+    apply thread_serial_putc_trace_case in Hput.
     assert (-1 <= z1 <= 255).
     { pose proof (Z.mod_pos_bound z0 256 ltac:(lia)).
       destruct Hput as (? & [(? & ?) | (? & ?)]); subst; lia.
@@ -2089,6 +2246,8 @@ Section SpecsCorrect.
     do 2 esplit; eauto.
     eapply sys_putc_trace_case in Htrace_case; eauto.
     2: unfold get_sys_ret; cbn; repeat (rewrite ZMap.gss || rewrite ZMap.gso by easy); auto.
+    pose proof (Byte.unsigned_range_2 c).
+    rewrite Int.unsigned_repr in * by functional_base.rep_omega.
     constructor; eauto; hnf.
     - (* putchar_post *)
       split; auto; cbn in *.
@@ -2096,40 +2255,56 @@ Section SpecsCorrect.
       destruct (Coqlib.zeq z1 (-1)); subst; auto.
       destruct (eq_dec.eq_dec _ _); try easy.
       rewrite Zle_imp_le_bool by lia.
-      destruct Hput as (? & [(? & ?) | (? & ?)]); subst; auto; lia.
+      destruct Hput as (? & [(? & ?) | (? & ?)]); subst; auto; try lia.
+      rewrite Zmod_small; auto; functional_base.rep_omega.
     - (* trace_itree_match *)
       rewrite Int.signed_repr in * by (cbn; lia).
       cbn in *; destruct Htrace_case as (Htr & Hcase).
       intros * Htrace; cbn.
       destruct Hcase as [(? & ->) | (? & Heq)]; subst; auto.
-      pose proof (Z.mod_pos_bound (Int.unsigned c) 256 ltac:(lia)).
+      pose proof (Z.mod_pos_bound (Byte.unsigned c) 256 ltac:(lia)).
       rewrite Zle_imp_le_bool in Htrace by lia.
       unshelve erewrite Heq; try solve [constructor].
       eapply Traces.sutt_trace_incl; eauto; cbn.
-      rewrite Int.repr_unsigned.
+      rewrite Byte.repr_unsigned.
       hnf; cbn; repeat constructor; auto.
   Qed.
 
-  (* TODO: memory *)
-  Record R_sys_getcs_correct sh buf len k z m st st' ret := {
-    vals := nil; (* TODO *)
-    getcs_z' := if 0 <=? Int.signed ret then k vals else z;
+  (* TODO: temporary *)
+  Section Post.
+  Import VST.msl.shares.
+  Import VST.veric.mem_lessdef.
+  Context {E : Type -> Type} {IO_E : @IO_event nat -< E}.
+  Definition getchars_post (m0 m : mem) r (witness : share * val * Z * (list byte -> IO_itree)) (z : @IO_itree E) :=
+    let '(sh, buf, len, k) := witness in Int.unsigned r <= len /\
+      exists msg, Zlength msg = Int.unsigned r /\ z = k msg /\
+      match buf with Vptr b ofs => exists m', Mem.storebytes m0 b (Ptrofs.unsigned ofs) (bytes_to_memvals msg) = Some m' /\
+          mem_equiv m m'
+      | _ => False end.
+  End Post.
+
+  Record R_sys_getcs_correct sh buf ofs len k z m st st' ret msg := {
+    addr := b2a.(b2a_map) buf + Ptrofs.unsigned ofs;
+    getcs_z' := k msg;
+    m' := flatmem_to_mem st'.(HP) m buf (Ptrofs.unsigned ofs) (Int.unsigned ret);
 
     (* Post condition holds on new state, itree, and result *)
-    getcs_post_ok : getchars_post m m ret (sh, buf, len, k) getcs_z';
+    getcs_post_ok : getchars_post m m' ret (sh, (Vptr buf ofs), len, k) getcs_z';
     (* The itrees and OS traces agree on the external events *)
-    getcs_itree_trace_ok : trace_itree_match z getcs_z' st.(io_rx_log) st'.(io_rx_log);
+    getcs_itree_trace_ok : trace_itree_match z getcs_z' st.(io_log) st'.(io_log);
     (* The new trace is valid *)
     getcs_trace_ok : valid_trace st';
     (* The memory has changed *)
-    (* TODO *)
-    (* getcs_mem_ok : st.(HP) = st'.(HP) *)
+    getcs_mem_ok : R_mem m' st'.(HP);
   }.
 
   Lemma sys_getcs_correct sh buf ofs len k z m st st' :
-    let addr := block_to_addr buf + Ptrofs.unsigned ofs in
+    let addr := b2a.(b2a_map) buf + Ptrofs.unsigned ofs in
+    0 <= addr <= Int.max_unsigned ->
+    0 <= len <= Int.max_unsigned ->
     (* Initial trace is valid *)
     valid_trace st ->
+    R_mem m st.(HP) ->
     (* Pre condition holds *)
     getchars_pre m (sh, Vptr buf ofs, len, k) z ->
     (* addr and len are passed as arguments *)
@@ -2137,15 +2312,17 @@ Section SpecsCorrect.
     get_sys_arg2 st = Vint (Int.repr len) ->
     (* sys_getcs returns some state *)
     sys_getcs_spec st = Some st' ->
-    exists ret,
+    exists ret msg,
       get_sys_ret st' = Vint ret /\
-      R_sys_getcs_correct sh (Vptr buf ofs) len k z m st st' ret.
+      inj_bytes msg = FlatMem.loadbytes st'.(HP) addr (Int.unsigned ret) /\
+      R_sys_getcs_correct sh buf ofs len k z m st st' ret msg.
   Proof.
-    unfold getchars_pre, get_sys_ret; intros Hvalid Hpre Harg1 Harg2 Hspec.
+    unfold getchars_pre, get_sys_ret; intros ? ? Hvalid HRmem Hpre Harg1 Harg2 Hspec.
     apply sys_getcs_preserve_valid_trace in Hspec as Hvalid'; auto.
     (* pose proof Hspec as Htrace_case. *)
     unfold sys_getcs_spec in Hspec; destruct_spec Hspec.
     prename (thread_cons_buf_read_loop_spec) into Hread.
+    apply thread_cons_buf_read_loop_mem_changed in Hread as (msg & Hlen & ? & Hmem).
     (* apply thread_cons_buf_read_getcs_trace_case in Hread as (_ & ?). *)
     (* 2: eapply (thread_serial_intr_disable_preserve_valid_trace st); eauto. *)
     unfold uctx_set_errno_spec in Hspec; destruct_spec Hspec.
@@ -2155,16 +2332,75 @@ Section SpecsCorrect.
     unfold uctx_arg2_spec in Hspec; destruct_spec Hspec.
     prename (uctx_arg3_spec) into Hspec.
     unfold uctx_arg3_spec in Hspec; destruct_spec Hspec.
+    prename thread_serial_intr_enable_spec into Henable.
+    apply thread_serial_intr_enable_mem_unchanged in Henable as Hmem'.
+    prename thread_serial_intr_disable_spec into Hdisable.
+    apply thread_serial_intr_disable_mem_unchanged in Hdisable as Hmem''.
+    rewrite Hmem', <- Hmem'' in Hmem.
     destruct r1; cbn in *.
     repeat (rewrite ZMap.gss in * || rewrite ZMap.gso in * by easy); subst; inj.
-    do 2 esplit; eauto.
     (* eapply sys_putc_trace_case in Htrace_case; eauto. *)
     (* 2: unfold get_sys_ret; cbn; repeat (rewrite ZMap.gss || rewrite ZMap.gso by easy); auto. *)
-    constructor; eauto; hnf.
-    - (* getchars_post *)
-      admit.
-    - (* trace_itree_match *)
-      admit.
+    assert (Haddr: Int.unsigned i = b2a.(b2a_map) buf + Ptrofs.unsigned ofs).
+    { unfold get_sys_arg1 in Harg1.
+      rewrite Harg1 in *; inj.
+      rewrite Int.unsigned_repr; auto.
+    }
+    rewrite Haddr in *.
+    assert (Hlen: Int.unsigned i0 = len); subst.
+    { unfold get_sys_arg2 in Harg2.
+      rewrite Harg2 in *; inj.
+      rewrite Int.unsigned_repr; auto.
+    }
+    assert (0 <= Zlength msg <= Int.max_unsigned).
+    { pose proof (Zlength_nonneg msg); cbn; lia. }
+    do 4 esplit; eauto.
+    - rewrite Int.unsigned_repr by auto.
+      unfold FlatMem.loadbytes, FlatMem.storebytes.
+      rewrite ZtoNat_Zlength, <- length_inj_bytes, FlatMem.getN_setN; auto.
+    - constructor; eauto; cbn.
+      + (* getchars_post *)
+        rewrite !Int.unsigned_repr by auto.
+        split; try lia.
+        exists msg; repeat (split; auto).
+        rewrite bytes_to_memvals_inj_bytes.
+        destruct Hpre as (? & Hperm).
+        apply range_perm_storebytes_less with (bytes := inj_bytes msg) in Hperm as (m' & Hm').
+        2: rewrite Zlength_inj_bytes; lia.
+        exists m'; split; auto.
+        eapply flatmem_to_mem_storebytes_equiv in Hm'; eauto.
+      + (* trace_itree_match *)
+        admit.
+      + (* mem_ok *)
+        hnf; intros * Hperm.
+        rewrite flatmem_to_mem_perm in Hperm.
+        rewrite Int.unsigned_repr by auto.
+        unfold FlatMem.loadbytes, FlatMem.storebytes.
+        rewrite flatmem_to_mem_contents, ZtoNat_Zlength, <- length_inj_bytes, FlatMem.getN_setN; auto.
+        hnf in HRmem; subst addr0.
+        case_eq (eq_block b buf); intros; subst; [rewrite PMap.gss | rewrite PMap.gso by auto].
+        * assert ((ofs0 < Ptrofs.unsigned ofs \/ ofs0 >= Ptrofs.unsigned ofs + Z.of_nat (length msg)) \/
+                  Ptrofs.unsigned ofs <= ofs0 < Ptrofs.unsigned ofs + Z.of_nat (length msg))
+            as [? | ?] by lia.
+          { specialize (HRmem _ _ Hperm).
+            rewrite setN_outside, FlatMem.setN_outside; auto.
+            all: rewrite length_inj_bytes; lia.
+          }
+          rewrite setN_inside, FlatMem.setN_inside; auto.
+          2-3: rewrite length_inj_bytes; lia.
+          replace (b2a.(b2a_map) buf + ofs0 - (b2a.(b2a_map) buf + Ptrofs.unsigned ofs))
+            with (ofs0 - Ptrofs.unsigned ofs) by lia.
+          destruct (nth _ _ _); auto.
+        * specialize (HRmem _ _ Hperm).
+          destruct Hpre as (_ & Hperm').
+          rewrite FlatMem.setN_outside; auto.
+          rewrite length_inj_bytes.
+          eapply block_to_addr_range_perm_disjoint
+            with (len := length msg) (ofs2 := Ptrofs.unsigned ofs) in Hperm; eauto; try lia.
+          rewrite Z.max_r in Hperm' by lia.
+          eapply range_perm_implies with (p1 := Writable); [| constructor].
+          rewrite <- Zlength_correct; hnf in Hperm' |- *; intros.
+          eapply Hperm'; lia.
   Admitted.
 
 End SpecsCorrect.
