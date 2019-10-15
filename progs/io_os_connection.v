@@ -1796,6 +1796,7 @@ Section Invariants.
 End Invariants.
 
 Section SpecsCorrect.
+  Import Mem.
 
   Context `{ThreadsConfigurationOps}.
 
@@ -1810,17 +1811,49 @@ Section SpecsCorrect.
     (* The new itree 'consumed' the OS-generated trace *)
     consume_trace z0 z t.
 
-  Variable block_to_addr : block -> Z.
+  Record block_to_addr := {
+    b2a_map : block -> Z;
+    b2a_disjoint : forall m b1 b2 ofs1 ofs2,
+      b1 <> b2 ->
+      perm m b1 ofs1 Cur Readable ->
+      perm m b2 ofs2 Cur Readable ->
+      b2a_map b1 + ofs1 <> b2a_map b2 + ofs2;
+  }.
+  Variable b2a : block_to_addr.
 
-  Import Mem.
+  Lemma block_to_addr_range_perm_disjoint : forall len m b1 b2 ofs1 ofs2,
+    let addr1 := b2a.(b2a_map) b1 + ofs1 in
+    let addr2 := b2a.(b2a_map) b2 + ofs2 in
+    b1 <> b2 ->
+    perm m b1 ofs1 Cur Readable ->
+    range_perm m b2 ofs2 (ofs2 + Z.of_nat len) Cur Readable ->
+    addr1 < addr2 \/ addr2 + Z.of_nat len <= addr1.
+  Proof.
+    induction len; cbn -[Z.of_nat]; intros * Hblock Hperm1 Hperm2; hnf in Hperm2; [lia |].
+    edestruct IHlen; eauto.
+    { hnf; intros; apply Hperm2; lia. }
+    right.
+    eapply (b2a.(b2a_disjoint) m b1 b2 ofs1 (ofs2 + Z.of_nat len)) in Hperm1; eauto; try lia.
+    eapply Hperm2; lia.
+  Qed.
+
+  Definition R_mem (m : mem) (f : flatmem) : Prop :=
+    forall b ofs,
+      let addr := b2a.(b2a_map) b + ofs in
+      perm m b ofs Cur Readable ->
+      match ZMap.get ofs (m.(mem_contents) !! b) with
+      | Fragment _ _ _ => True
+      | v => v = FlatMem.FlatMem2MemVal (ZMap.get addr f)
+      end.
+
   Definition mem_to_flatmem (f : flatmem) (m : mem) (b : block) (ofs len : Z) : flatmem :=
     let contents := getN (Z.to_nat len) ofs (m.(mem_contents) !! b) in
-    let addr := block_to_addr b + ofs in
+    let addr := b2a.(b2a_map) b + ofs in
     FlatMem.setN contents addr f.
 
   Program Definition flatmem_to_mem (f : flatmem) (m : mem) (b : block) (ofs len : Z) : mem :=
     let (cont, acc, nxt, amax, nxt_no, _) := m in
-    let addr := block_to_addr b + ofs in
+    let addr := b2a.(b2a_map) b + ofs in
     let bytes := FlatMem.getN (Z.to_nat len) addr f in
     let contents := setN bytes ofs (cont !! b) in
     mkmem (PMap.set b contents cont) acc nxt amax nxt_no _.
@@ -1842,10 +1875,10 @@ Section SpecsCorrect.
     rewrite <- Zlength_correct.
     red; intros; apply Hperm; lia.
   Defined.
-  Opaque storebytes.
+  Local Opaque storebytes.
 
   Lemma flatmem_to_mem_contents : forall f m b ofs len,
-    let addr := block_to_addr b + ofs in
+    let addr := b2a.(b2a_map) b + ofs in
     let bytes := FlatMem.getN (Z.to_nat len) addr f in
     let contents := setN bytes ofs (m.(mem_contents) !! b) in
     mem_contents (flatmem_to_mem f m b ofs len) = PMap.set b contents m.(mem_contents).
@@ -1867,7 +1900,7 @@ Section SpecsCorrect.
 
   Import mem_lessdef.
   Lemma flatmem_to_mem_storebytes_equiv : forall f m b ofs vs m',
-    let addr := block_to_addr b + ofs in
+    let addr := b2a.(b2a_map) b + ofs in
     storebytes m b ofs (inj_bytes vs) = Some m' ->
     mem_equiv (flatmem_to_mem (FlatMem.storebytes f addr (inj_bytes vs)) m b ofs (Zlength vs)) m'.
   Proof.
@@ -1906,6 +1939,26 @@ Section SpecsCorrect.
     - erewrite flatmem_to_mem_nextblock, nextblock_storebytes; eauto; lia.
   Qed.
 
+  Lemma setN_inside : forall vs p q c,
+    p <= q < p + Z.of_nat (length vs) ->
+    ZMap.get q (setN vs p c) = nth (Z.to_nat (q - p)) vs Undef.
+  Proof.
+    clear.
+    induction vs; cbn -[Z.of_nat]; intros * Hrange; [lia |].
+    assert (p = q \/ p < q) as [? | ?] by lia; subst.
+    { rewrite Z.sub_diag, setN_outside, ZMap.gss; auto; lia. }
+    rewrite IHvs; auto; try lia.
+    replace (q - (p + 1)) with (q - p - 1) by lia.
+    destruct (Z.to_nat (q - p)) eqn:Hsub.
+    { apply (f_equal Z.of_nat) in Hsub.
+      rewrite Z2Nat.id in Hsub; lia.
+    }
+    apply (f_equal Z.of_nat) in Hsub.
+    rewrite Z2Nat.id in Hsub; try lia.
+    rewrite Hsub, Z2Nat.inj_sub, Nat2Z.id; try lia.
+    cbn; rewrite Nat.sub_0_r; auto.
+  Qed.
+
   Record R_sys_getc_correct k z m st st' ret := {
     (* New itree is old k applied to result, or same as old itree if nothing
        to read *)
@@ -1918,12 +1971,13 @@ Section SpecsCorrect.
     (* The new trace is valid *)
     getc_trace_ok : valid_trace st';
     (* The memory is unchanged *)
-    getc_mem_ok : st.(HP) = st'.(HP)
+    getc_mem_ok : R_mem m st'.(HP);
   }.
 
   Lemma sys_getc_correct k z m st st' :
     (* Initial trace is valid *)
     valid_trace st ->
+    R_mem m st.(HP) ->
     (* Pre condition holds *)
     getchar_pre' m k z ->
     (* sys_getc returns some state *)
@@ -1932,7 +1986,7 @@ Section SpecsCorrect.
       get_sys_ret st' = Vint ret /\
       R_sys_getc_correct k z m st st' ret.
   Proof.
-    unfold getchar_pre', get_sys_ret; intros Hvalid Hpre Hspec.
+    unfold getchar_pre', get_sys_ret; intros Hvalid HRmem Hpre Hspec.
     apply sys_getc_preserve_valid_trace in Hspec as Hvalid'; auto.
     apply sys_getc_mem_unchanged in Hspec as Hmem.
     pose proof Hspec as Htrace_case.
@@ -1977,12 +2031,13 @@ Section SpecsCorrect.
     (* The new trace is valid *)
     putc_trace_ok : valid_trace st';
     (* The memory is unchanged *)
-    putc_mem_ok : st.(HP) = st'.(HP)
+    putc_mem_ok : R_mem m st'.(HP);
   }.
 
   Lemma sys_putc_correct c k z m st st' :
     (* Initial trace is valid *)
     valid_trace st ->
+    R_mem m st.(HP) ->
     (* Pre condition holds *)
     putchar_pre m (c, k) z ->
     (* c is passed as an argument *)
@@ -1993,7 +2048,7 @@ Section SpecsCorrect.
       get_sys_ret st' = Vint ret /\
       R_sys_putc_correct c k z m st st' ret.
   Proof.
-    unfold putchar_pre, get_sys_arg1, get_sys_ret; intros Hvalid Hpre Harg Hspec.
+    unfold putchar_pre, get_sys_arg1, get_sys_ret; intros Hvalid HRmem Hpre Harg Hspec.
     apply sys_putc_mem_unchanged in Hspec as Hmem.
     pose proof (sys_putc_preserve_valid_trace _ _ Hvalid Hspec).
     pose proof Hspec as Htrace_case.
@@ -2052,7 +2107,7 @@ Section SpecsCorrect.
   End Post.
 
   Record R_sys_getcs_correct sh buf ofs len k z m st st' ret msg := {
-    addr := block_to_addr buf + Ptrofs.unsigned ofs;
+    addr := b2a.(b2a_map) buf + Ptrofs.unsigned ofs;
     getcs_z' := k msg;
     m' := flatmem_to_mem st'.(HP) m buf (Ptrofs.unsigned ofs) (Int.unsigned ret);
 
@@ -2063,15 +2118,16 @@ Section SpecsCorrect.
     (* The new trace is valid *)
     getcs_trace_ok : valid_trace st';
     (* The memory has changed *)
-    getcs_mem_ok : FlatMem.storebytes st.(HP) addr (inj_bytes msg) = st'.(HP)
+    getcs_mem_ok : R_mem m' st'.(HP);
   }.
 
   Lemma sys_getcs_correct sh buf ofs len k z m st st' :
-    let addr := block_to_addr buf + Ptrofs.unsigned ofs in
+    let addr := b2a.(b2a_map) buf + Ptrofs.unsigned ofs in
     0 <= addr <= Int.max_unsigned ->
     0 <= len <= Int.max_unsigned ->
     (* Initial trace is valid *)
     valid_trace st ->
+    R_mem m st.(HP) ->
     (* Pre condition holds *)
     getchars_pre m (sh, Vptr buf ofs, len, k) z ->
     (* addr and len are passed as arguments *)
@@ -2084,7 +2140,7 @@ Section SpecsCorrect.
       inj_bytes msg = FlatMem.loadbytes st'.(HP) addr (Int.unsigned ret) /\
       R_sys_getcs_correct sh buf ofs len k z m st st' ret msg.
   Proof.
-    unfold getchars_pre, get_sys_ret; intros ? ? Hvalid Hpre Harg1 Harg2 Hspec.
+    unfold getchars_pre, get_sys_ret; intros ? ? Hvalid HRmem Hpre Harg1 Harg2 Hspec.
     apply sys_getcs_preserve_valid_trace in Hspec as Hvalid'; auto.
     (* pose proof Hspec as Htrace_case. *)
     unfold sys_getcs_spec in Hspec; destruct_spec Hspec.
@@ -2108,7 +2164,7 @@ Section SpecsCorrect.
     repeat (rewrite ZMap.gss in * || rewrite ZMap.gso in * by easy); subst; inj.
     (* eapply sys_putc_trace_case in Htrace_case; eauto. *)
     (* 2: unfold get_sys_ret; cbn; repeat (rewrite ZMap.gss || rewrite ZMap.gso by easy); auto. *)
-    assert (Haddr: Int.unsigned i = block_to_addr buf + Ptrofs.unsigned ofs).
+    assert (Haddr: Int.unsigned i = b2a.(b2a_map) buf + Ptrofs.unsigned ofs).
     { unfold get_sys_arg1 in Harg1.
       rewrite Harg1 in *; inj.
       rewrite Int.unsigned_repr; auto.
@@ -2138,6 +2194,36 @@ Section SpecsCorrect.
         eapply flatmem_to_mem_storebytes_equiv in Hm'; eauto.
       + (* trace_itree_match *)
         admit.
+      + (* mem_ok *)
+        hnf; intros * Hperm.
+        rewrite flatmem_to_mem_perm in Hperm.
+        rewrite Int.unsigned_repr by auto.
+        unfold FlatMem.loadbytes, FlatMem.storebytes.
+        rewrite flatmem_to_mem_contents, ZtoNat_Zlength, <- length_inj_bytes, FlatMem.getN_setN; auto.
+        hnf in HRmem; subst addr0.
+        case_eq (eq_block b buf); intros; subst; [rewrite PMap.gss | rewrite PMap.gso by auto].
+        * assert ((ofs0 < Ptrofs.unsigned ofs \/ ofs0 >= Ptrofs.unsigned ofs + Z.of_nat (length msg)) \/
+                  Ptrofs.unsigned ofs <= ofs0 < Ptrofs.unsigned ofs + Z.of_nat (length msg))
+            as [? | ?] by lia.
+          { specialize (HRmem _ _ Hperm).
+            rewrite setN_outside, FlatMem.setN_outside; auto.
+            all: rewrite length_inj_bytes; lia.
+          }
+          rewrite setN_inside, FlatMem.setN_inside; auto.
+          2-3: rewrite length_inj_bytes; lia.
+          replace (b2a.(b2a_map) buf + ofs0 - (b2a.(b2a_map) buf + Ptrofs.unsigned ofs))
+            with (ofs0 - Ptrofs.unsigned ofs) by lia.
+          destruct (nth _ _ _); auto.
+        * specialize (HRmem _ _ Hperm).
+          destruct Hpre as (_ & Hperm').
+          rewrite FlatMem.setN_outside; auto.
+          rewrite length_inj_bytes.
+          eapply block_to_addr_range_perm_disjoint
+            with (len := length msg) (ofs2 := Ptrofs.unsigned ofs) in Hperm; eauto; try lia.
+          rewrite Z.max_r in Hperm' by lia.
+          eapply range_perm_implies with (p1 := Writable); [| constructor].
+          rewrite <- Zlength_correct; hnf in Hperm' |- *; intros.
+          eapply Hperm'; lia.
   Admitted.
 
 End SpecsCorrect.

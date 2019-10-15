@@ -63,7 +63,7 @@ Definition IO_ext_sem e (args : list val) s :=
     end
   else Some (s, None, TEnd).
 
-Variable (R_mem : block -> Z).
+Variable (b2a : block_to_addr).
 
 (* Because putchar and getchar don't use memory, these functions don't either. *)
 Definition IO_inj_mem (e : external_function) (args : list val) (m : mem) t s :=
@@ -102,6 +102,7 @@ Proof.
       destruct (eq_dec _ _); subst; try discriminate.
       destruct sys_putc_spec eqn:Hspec; inv H3.
       eapply sys_putc_correct in Hspec as (? & -> & [? Hpost ?]); eauto.
+      admit. (* TODO: R_mem *)
     + destruct w as (? & _ & ?).
       destruct H1 as (? & ? & Hpre); subst.
       destruct s; simpl in *.
@@ -114,11 +115,12 @@ Proof.
         destruct Hpost as [[]|[-> ->]]; split; try (simpl in *; rep_omega).
         -- rewrite if_false by omega; eauto.
         -- rewrite if_true; auto.
+      * admit. (* TODO: R_mem *)
       * unfold getchar_pre, getchar_pre' in *.
         apply Traces.sutt_trace_incl; auto.
   - apply juicy_dry_specs.
   - apply dry_spec_mem.
-Qed.
+Admitted.
 
 (* relate to OS's external events *)
 Notation ge := (globalenv prog).

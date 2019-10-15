@@ -114,6 +114,25 @@ Module FlatMem.
     rewrite IHvs, setN_outside, ZMap.gss; auto; lia.
   Qed.
 
+  Lemma setN_inside : forall vs p q c,
+    p <= q < p + Z.of_nat (length vs) ->
+    ZMap.get q (setN vs p c) = Mem2FlatMemVal (nth (Z.to_nat (q - p)) vs Undef).
+  Proof.
+    induction vs; cbn -[Z.of_nat]; intros * Hrange; [lia |].
+    assert (p = q \/ p < q) as [? | ?] by lia; subst.
+    { rewrite Z.sub_diag, setN_outside, ZMap.gss; auto; lia. }
+    rewrite IHvs; auto; try lia.
+    replace (q - (p + 1)) with (q - p - 1) by lia.
+    destruct (Z.to_nat (q - p)) eqn:Hsub.
+    { apply (f_equal Z.of_nat) in Hsub.
+      rewrite Z2Nat.id in Hsub; lia.
+    }
+    apply (f_equal Z.of_nat) in Hsub.
+    rewrite Z2Nat.id in Hsub; try lia.
+    rewrite Hsub, Z2Nat.inj_sub, Nat2Z.id; try lia.
+    cbn; unfold Pos.to_nat; cbn; rewrite Nat.sub_0_r; auto.
+  Qed.
+
 End FlatMem.
 
 Notation flatmem := FlatMem.flatmem.
