@@ -67,7 +67,7 @@ Variable (b2a : block_to_addr).
 
 (* Because putchar and getchar don't use memory, these functions don't either. *)
 Definition IO_inj_mem (e : external_function) (args : list val) (m : mem) t s :=
-  valid_trace s /\ R_mem b2a m (HP s) /\ t = trace_of_ostrace s.(io_log).
+  valid_trace s /\ R_mem b2a m s /\ t = trace_of_ostrace s.(io_log).
 Definition OS_mem (e : external_function) (args : list val) m (s : RData) : mem := m.
 (* In general, this could look like:
   if oi_eq_dec (Some (ext_link "putchars"%string, ...) (ef_id_sig ext_link e) then
