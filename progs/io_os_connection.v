@@ -2032,8 +2032,8 @@ Section SpecsCorrect.
     b2a_map : block -> Z;
     b2a_disjoint : forall m b1 b2 ofs1 ofs2,
       b1 <> b2 ->
-      perm m b1 ofs1 Cur Readable ->
-      perm m b2 ofs2 Cur Readable ->
+      perm m b1 ofs1 Cur Nonempty ->
+      perm m b2 ofs2 Cur Nonempty ->
       b2a_map b1 + ofs1 <> b2a_map b2 + ofs2;
   }.
   Variable b2a : block_to_addr.
@@ -2042,8 +2042,8 @@ Section SpecsCorrect.
     let addr1 := b2a.(b2a_map) b1 + ofs1 in
     let addr2 := b2a.(b2a_map) b2 + ofs2 in
     b1 <> b2 ->
-    perm m b1 ofs1 Cur Readable ->
-    range_perm m b2 ofs2 (ofs2 + Z.of_nat len) Cur Readable ->
+    perm m b1 ofs1 Cur Nonempty ->
+    range_perm m b2 ofs2 (ofs2 + Z.of_nat len) Cur Nonempty ->
     addr1 < addr2 \/ addr2 + Z.of_nat len <= addr1.
   Proof.
     induction len; cbn -[Z.of_nat]; intros * Hblock Hperm1 Hperm2; hnf in Hperm2; [lia |].
@@ -2059,7 +2059,7 @@ Section SpecsCorrect.
       let vaddr := b2a.(b2a_map) b + ofs in
       let curid := ZMap.get st.(CPU_ID) st.(cid) in
       Some paddr = get_kernel_pa_spec curid vaddr st ->
-      perm m b ofs Cur Readable ->
+      perm m b ofs Cur Nonempty ->
       match ZMap.get ofs (m.(mem_contents) !! b) with
       | Fragment _ _ _ => True
       | v => v = FlatMem.FlatMem2MemVal (ZMap.get paddr st.(HP))
@@ -2435,7 +2435,7 @@ Section SpecsCorrect.
         unfold FlatMem.storebytes.
         hnf in HRmem; subst vaddr; cbn.
         erewrite storebytes_mem_contents; eauto.
-        assert (Hperm'' : perm m b ofs0 Cur Readable) by (eapply perm_storebytes_2; eauto).
+        assert (Hperm'' : perm m b ofs0 Cur Nonempty) by (eapply perm_storebytes_2; eauto).
         specialize (HRmem _ _ _ Hpaddr Hperm'').
         case_eq (eq_block b buf); intros; subst; [rewrite PMap.gss | rewrite PMap.gso by auto].
         * assert ((ofs0 < Ptrofs.unsigned ofs \/ ofs0 >= Ptrofs.unsigned ofs + Z.of_nat (length msg)) \/
