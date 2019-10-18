@@ -1395,7 +1395,8 @@ Section Invariants.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     cons_intr_aux st = Some st' ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold cons_intr_aux; intros * Hspec; destruct_spec Hspec.
     all: destruct st; auto.
@@ -1405,20 +1406,20 @@ Section Invariants.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     serial_intr_enable_aux n st = Some st' ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     induction n; intros * Hspec; cbn -[cons_intr_aux] in Hspec; inj; auto.
-    destruct_spec Hspec; auto.
-    etransitivity.
-    eapply cons_intr_aux_pmap_unchanged; eauto.
-    eauto.
+    destruct_spec Hspec; auto; subst pid.
+    edestruct cons_intr_aux_pmap_unchanged as (-> & ->); eauto.
   Qed.
 
   Lemma serial_intr_enable_pmap_unchanged : forall st st' vaddr,
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     serial_intr_enable_spec st = Some st' ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold serial_intr_enable_spec; intros * Hspec; destruct_spec Hspec.
     prename serial_intr_enable_aux into Hspec.
@@ -1430,14 +1431,15 @@ Section Invariants.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     serial_intr_disable_aux n mask st = Some st' ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     induction n; intros * Hspec; cbn -[cons_intr_aux] in Hspec; inj; auto.
-    destruct_spec Hspec; auto.
-    - etransitivity; [| eapply IHn; eauto].
+    destruct_spec Hspec; auto; subst pid'.
+    - edestruct IHn as (<- & <-); eauto.
       destruct st; auto.
-    - etransitivity; [| eapply IHn; eauto].
-      etransitivity; [| eapply cons_intr_aux_pmap_unchanged; eauto].
+    - edestruct IHn as (<- & <-); eauto.
+      edestruct cons_intr_aux_pmap_unchanged as (<- & <-); eauto.
       destruct st; auto.
   Qed.
 
@@ -1445,7 +1447,8 @@ Section Invariants.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     serial_intr_disable_spec st = Some st' ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold serial_intr_disable_spec; intros * Hspec; destruct_spec Hspec.
     prename serial_intr_disable_aux into Hspec.
@@ -1457,7 +1460,8 @@ Section Invariants.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     thread_serial_intr_enable_spec st = Some st' ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold thread_serial_intr_enable_spec; intros * Hspec; destruct_spec Hspec.
     eapply serial_intr_enable_pmap_unchanged; eauto.
@@ -1467,7 +1471,8 @@ Section Invariants.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     thread_serial_intr_disable_spec st = Some st' ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold thread_serial_intr_disable_spec; intros * Hspec; destruct_spec Hspec.
     eapply serial_intr_disable_pmap_unchanged; eauto.
@@ -1477,7 +1482,8 @@ Section Invariants.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     uctx_set_retval1_spec v st = Some st' ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold uctx_set_retval1_spec; intros * Hspec; destruct_spec Hspec.
     destruct st; auto.
@@ -1487,7 +1493,8 @@ Section Invariants.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     uctx_set_errno_spec e st = Some st' ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold uctx_set_errno_spec; intros * Hspec; destruct_spec Hspec.
     destruct st; auto.
@@ -1497,7 +1504,8 @@ Section Invariants.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     serial_putc_spec c st = Some (st', r) ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold serial_putc_spec; intros * Hspec; destruct_spec Hspec; eauto.
     all: destruct st; auto.
@@ -1507,7 +1515,8 @@ Section Invariants.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     cons_buf_read_spec st = Some (st', c) ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold cons_buf_read_spec; intros * Hspec; destruct_spec Hspec; eauto.
     destruct st; auto.
@@ -1517,21 +1526,23 @@ Section Invariants.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     cons_buf_read_loop_spec n read addr st = Some (st', read') ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     induction n; intros * Hspec; cbn [cons_buf_read_loop_spec] in Hspec; inj; auto.
     destruct_spec Hspec; inj; auto.
     prename cons_buf_read_spec into Hspec'.
     eapply cons_buf_read_pmap_unchanged in Hspec'.
     eapply IHn in Hspec.
-    rewrite Hspec', <- Hspec; destruct r; auto.
+    destruct Hspec' as (-> & ->), Hspec as (<- & <-); destruct r; auto.
   Qed.
 
   Lemma thread_cons_buf_read_pmap_unchanged : forall st st' c vaddr,
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     thread_cons_buf_read_spec st = Some (st', c) ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold thread_cons_buf_read_spec; intros * Hspec; destruct_spec Hspec.
     eapply cons_buf_read_pmap_unchanged; eauto.
@@ -1541,7 +1552,8 @@ Section Invariants.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     thread_serial_putc_spec c st = Some (st', r) ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold thread_serial_putc_spec; intros * Hspec; destruct_spec Hspec.
     eapply serial_putc_pmap_unchanged; eauto.
@@ -1551,7 +1563,8 @@ Section Invariants.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     thread_cons_buf_read_loop_spec len addr st = Some (st', read) ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold thread_cons_buf_read_loop_spec; intros * Hspec; destruct_spec Hspec.
     eapply cons_buf_read_loop_pmap_unchanged; eauto.
@@ -1561,45 +1574,45 @@ Section Invariants.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     sys_getc_spec st = Some st' ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold sys_getc_spec; intros * Hspec; destruct_spec Hspec.
-    etransitivity; [| eapply uctx_set_errno_pmap_unchanged; eauto].
-    etransitivity; [| eapply uctx_set_retval1_pmap_unchanged; eauto].
-    etransitivity; [| eapply thread_serial_intr_enable_pmap_unchanged; eauto].
-    etransitivity; [| eapply thread_cons_buf_read_pmap_unchanged; eauto].
-    etransitivity; [| eapply thread_serial_intr_disable_pmap_unchanged; eauto].
-    eauto.
+    edestruct thread_serial_intr_disable_pmap_unchanged as (-> & ->); eauto.
+    edestruct thread_cons_buf_read_pmap_unchanged as (-> & ->); eauto.
+    edestruct thread_serial_intr_enable_pmap_unchanged as (-> & ->); eauto.
+    edestruct uctx_set_retval1_pmap_unchanged as (-> & ->); eauto.
+    edestruct uctx_set_errno_pmap_unchanged as (-> & ->); eauto.
   Qed.
 
   Lemma sys_putc_pmap_unchanged : forall st st' vaddr,
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     sys_putc_spec st = Some st' ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold sys_putc_spec; intros * Hspec; destruct_spec Hspec.
-    etransitivity; [| eapply uctx_set_errno_pmap_unchanged; eauto].
-    etransitivity; [| eapply uctx_set_retval1_pmap_unchanged; eauto].
-    etransitivity; [| eapply thread_serial_intr_enable_pmap_unchanged; eauto].
-    etransitivity; [| eapply thread_serial_putc_pmap_unchanged; eauto].
-    etransitivity; [| eapply thread_serial_intr_disable_pmap_unchanged; eauto].
-    eauto.
+    edestruct thread_serial_intr_disable_pmap_unchanged as (-> & ->); eauto.
+    edestruct thread_serial_putc_pmap_unchanged as (-> & ->); eauto.
+    edestruct thread_serial_intr_enable_pmap_unchanged as (-> & ->); eauto.
+    edestruct uctx_set_retval1_pmap_unchanged as (-> & ->); eauto.
+    edestruct uctx_set_errno_pmap_unchanged as (-> & ->); eauto.
   Qed.
 
   Lemma sys_getcs_pmap_unchanged : forall st st' vaddr,
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     sys_getcs_spec st = Some st' ->
-    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'.
+    get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st'
+    /\ st.(pperm) = st'.(pperm).
   Proof.
     unfold sys_getcs_spec; intros * Hspec; destruct_spec Hspec.
-    etransitivity; [| eapply uctx_set_errno_pmap_unchanged; eauto].
-    etransitivity; [| eapply uctx_set_retval1_pmap_unchanged; eauto].
-    etransitivity; [| eapply thread_serial_intr_enable_pmap_unchanged; eauto].
-    etransitivity; [| eapply thread_cons_buf_read_loop_pmap_unchanged; eauto].
-    etransitivity; [| eapply thread_serial_intr_disable_pmap_unchanged; eauto].
-    eauto.
+    edestruct thread_serial_intr_disable_pmap_unchanged as (-> & ->); eauto.
+    edestruct thread_cons_buf_read_loop_pmap_unchanged as (-> & ->); eauto.
+    edestruct thread_serial_intr_enable_pmap_unchanged as (-> & ->); eauto.
+    edestruct uctx_set_retval1_pmap_unchanged as (-> & ->); eauto.
+    edestruct uctx_set_errno_pmap_unchanged as (-> & ->); eauto.
   Qed.
 
   (** No user-visible events are generated. *)
@@ -2059,6 +2072,7 @@ Section SpecsCorrect.
       let vaddr := b2a.(b2a_map) b + ofs in
       let curid := ZMap.get st.(CPU_ID) st.(cid) in
       Some paddr = get_kernel_pa_spec curid vaddr st ->
+      ZMap.get (paddr / PAGE_SIZE) st.(pperm) = PGAlloc ->
       perm m b ofs Cur Nonempty ->
       match ZMap.get ofs (m.(mem_contents) !! b) with
       | Fragment _ _ _ => True
@@ -2243,8 +2257,8 @@ Section SpecsCorrect.
       apply Hpre.
       hnf; cbn; repeat constructor; auto.
     - (* R_mem *)
-      intros * Haddr **; apply HRmem; auto.
-      erewrite sys_getc_pmap_unchanged; eauto.
+      intros; edestruct sys_getc_pmap_unchanged as (Hpa & Hperm); eauto.
+      apply HRmem; rewrite ?Hpa, ?Hperm; auto.
   Qed.
 
   Record R_sys_putc_correct c k z m st st' ret := {
@@ -2320,8 +2334,8 @@ Section SpecsCorrect.
       rewrite Byte.repr_unsigned.
       hnf; cbn; repeat constructor; auto.
     - (* R_mem *)
-      intros * Haddr **; apply HRmem; auto.
-      erewrite sys_putc_pmap_unchanged; eauto.
+      intros; edestruct sys_putc_pmap_unchanged as (Hpa & Hperm); eauto.
+      apply HRmem; rewrite ?Hpa, ?Hperm; auto.
   Qed.
 
   (* TODO: temporary *)
@@ -2430,13 +2444,14 @@ Section SpecsCorrect.
       + (* R_mem *)
         (* TODO: physical mem might not be consecutive, can't use storebytes or
            setN *)
-        hnf; intros * Hpaddr Hperm; subst curid; cbn.
-        erewrite <- sys_getcs_pmap_unchanged in Hpaddr; eauto.
+        hnf; intros * Hpaddr Halloc Hperm; subst curid; cbn.
+        edestruct sys_getcs_pmap_unchanged as (Hpa & Hpperm); eauto.
+        rewrite <- Hpa in Hpaddr; rewrite <- Hpperm in Halloc.
         unfold FlatMem.storebytes.
         hnf in HRmem; subst vaddr; cbn.
         erewrite storebytes_mem_contents; eauto.
         assert (Hperm'' : perm m b ofs0 Cur Nonempty) by (eapply perm_storebytes_2; eauto).
-        specialize (HRmem _ _ _ Hpaddr Hperm'').
+        specialize (HRmem _ _ _ Hpaddr Halloc Hperm'').
         case_eq (eq_block b buf); intros; subst; [rewrite PMap.gss | rewrite PMap.gso by auto].
         * assert ((ofs0 < Ptrofs.unsigned ofs \/ ofs0 >= Ptrofs.unsigned ofs + Z.of_nat (length msg)) \/
                   Ptrofs.unsigned ofs <= ofs0 < Ptrofs.unsigned ofs + Z.of_nat (length msg))

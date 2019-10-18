@@ -172,6 +172,16 @@ Inductive PDE :=
 Definition PMap := ZMap.t PDE.
 Definition PMapPool := ZMap.t PMap.
 
+Inductive PPgOnwer :=
+  | PGPMap (n i : Z).
+
+Inductive PPgInfo :=
+  | PGUndef
+  | PGAlloc
+  | PGHide (o : PPgOnwer).
+
+Definition PPermT := ZMap.t PPgInfo.
+
 Inductive SyncChannel :=
   | SyncChanUndef
   | SyncChanValid (to senderpaddr count busy : int).
@@ -294,6 +304,7 @@ Record RData := mkRData {
   HP : flatmem;
   cid : ZMap.t Z; (* current thread id *)
   init : bool; (* pure logic flag, show whether the initialization at this layer has been called or not *)
+  pperm : PPermT; (* physical page permission table *)
   ptpool : PMapPool; (* page table pool *)
   ipt : bool; (* pure logic flag, shows whether the current page map is the kernel's page map *)
   big_log : BigLogType;
@@ -312,59 +323,62 @@ Class ThreadsConfigurationOps := {
 }.
 
 Definition update_CPU_ID (a : RData) b :=
-  let (_, pg, ikern, ihost, HP, cid, init, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
-  mkRData b pg ikern ihost HP cid init ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
+  let (_, pg, ikern, ihost, HP, cid, init, pperm, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData b pg ikern ihost HP cid init pperm ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
 Definition update_pg (a : RData) b :=
-  let (CPU_ID, _, ikern, ihost, HP, cid, init, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
-  mkRData CPU_ID b ikern ihost HP cid init ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
+  let (CPU_ID, _, ikern, ihost, HP, cid, init, pperm, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID b ikern ihost HP cid init pperm ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
 Definition update_ikern (a : RData) b :=
-  let (CPU_ID, pg, _, ihost, HP, cid, init, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
-  mkRData CPU_ID pg b ihost HP cid init ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
+  let (CPU_ID, pg, _, ihost, HP, cid, init, pperm, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID pg b ihost HP cid init pperm ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
 Definition update_ihost (a : RData) b :=
-  let (CPU_ID, pg, ikern, _, HP, cid, init, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
-  mkRData CPU_ID pg ikern b HP cid init ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
+  let (CPU_ID, pg, ikern, _, HP, cid, init, pperm, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID pg ikern b HP cid init pperm ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
 Definition update_HP (a : RData) b :=
-  let (CPU_ID, pg, ikern, ihost, _, cid, init, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
-  mkRData CPU_ID pg ikern ihost b cid init ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
+  let (CPU_ID, pg, ikern, ihost, _, cid, init, pperm, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID pg ikern ihost b cid init pperm ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
 Definition update_cid (a : RData) b :=
-  let (CPU_ID, pg, ikern, ihost, HP, _, init, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
-  mkRData CPU_ID pg ikern ihost HP b init ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
+  let (CPU_ID, pg, ikern, ihost, HP, _, init, pperm, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID pg ikern ihost HP b init pperm ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
 Definition update_init (a : RData) b :=
-  let (CPU_ID, pg, ikern, ihost, HP, cid, _, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
-  mkRData CPU_ID pg ikern ihost HP cid b ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
+  let (CPU_ID, pg, ikern, ihost, HP, cid, _, pperm, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID pg ikern ihost HP cid b pperm ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
+Definition update_pperm (a : RData) b :=
+  let (CPU_ID, pg, ikern, ihost, HP, cid, init, _, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID pg ikern ihost HP cid init b ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
 Definition update_ptpool (a : RData) b :=
-  let (CPU_ID, pg, ikern, ihost, HP, cid, init, _, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
-  mkRData CPU_ID pg ikern ihost HP cid init b ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
+  let (CPU_ID, pg, ikern, ihost, HP, cid, init, pperm, _, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID pg ikern ihost HP cid init pperm b ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
 Definition update_ipt (a : RData) b :=
-  let (CPU_ID, pg, ikern, ihost, HP, cid, init, ptpool, _, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
-  mkRData CPU_ID pg ikern ihost HP cid init ptpool b big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
+  let (CPU_ID, pg, ikern, ihost, HP, cid, init, pperm, ptpool, _, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID pg ikern ihost HP cid init pperm ptpool b big_log uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
 Definition update_big_log (a : RData) b :=
-  let (CPU_ID, pg, ikern, ihost, HP, cid, init, ptpool, ipt, _, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
-  mkRData CPU_ID pg ikern ihost HP cid init ptpool ipt b uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
+  let (CPU_ID, pg, ikern, ihost, HP, cid, init, pperm, ptpool, ipt, _, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID pg ikern ihost HP cid init pperm ptpool ipt b uctxt com1 drv_serial console ioapic intr_flag in_intr io_log.
 Definition update_uctxt (a : RData) b :=
-  let (CPU_ID, pg, ikern, ihost, HP, cid, init, ptpool, ipt, big_log, _, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
-  mkRData CPU_ID pg ikern ihost HP cid init ptpool ipt big_log b com1 drv_serial console ioapic intr_flag in_intr io_log.
+  let (CPU_ID, pg, ikern, ihost, HP, cid, init, pperm, ptpool, ipt, big_log, _, com1, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID pg ikern ihost HP cid init pperm ptpool ipt big_log b com1 drv_serial console ioapic intr_flag in_intr io_log.
 Definition update_com1 (a : RData) b :=
-  let (CPU_ID, pg, ikern, ihost, HP, cid, init, ptpool, ipt, big_log, uctxt, _, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
-  mkRData CPU_ID pg ikern ihost HP cid init ptpool ipt big_log uctxt b drv_serial console ioapic intr_flag in_intr io_log.
+  let (CPU_ID, pg, ikern, ihost, HP, cid, init, pperm, ptpool, ipt, big_log, uctxt, _, drv_serial, console, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID pg ikern ihost HP cid init pperm ptpool ipt big_log uctxt b drv_serial console ioapic intr_flag in_intr io_log.
 Definition update_drv_serial (a : RData) b :=
-  let (CPU_ID, pg, ikern, ihost, HP, cid, init, ptpool, ipt, big_log, uctxt, com1, _, console, ioapic, intr_flag, in_intr, io_log) := a in
-  mkRData CPU_ID pg ikern ihost HP cid init ptpool ipt big_log uctxt com1 b console ioapic intr_flag in_intr io_log.
+  let (CPU_ID, pg, ikern, ihost, HP, cid, init, pperm, ptpool, ipt, big_log, uctxt, com1, _, console, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID pg ikern ihost HP cid init pperm ptpool ipt big_log uctxt com1 b console ioapic intr_flag in_intr io_log.
 Definition update_console (a : RData) b :=
-  let (CPU_ID, pg, ikern, ihost, HP, cid, init, ptpool, ipt, big_log, uctxt, com1, drv_serial, _, ioapic, intr_flag, in_intr, io_log) := a in
-  mkRData CPU_ID pg ikern ihost HP cid init ptpool ipt big_log uctxt com1 drv_serial b ioapic intr_flag in_intr io_log.
+  let (CPU_ID, pg, ikern, ihost, HP, cid, init, pperm, ptpool, ipt, big_log, uctxt, com1, drv_serial, _, ioapic, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID pg ikern ihost HP cid init pperm ptpool ipt big_log uctxt com1 drv_serial b ioapic intr_flag in_intr io_log.
 Definition update_ioapic (a : RData) b :=
-  let (CPU_ID, pg, ikern, ihost, HP, cid, init, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, _, intr_flag, in_intr, io_log) := a in
-  mkRData CPU_ID pg ikern ihost HP cid init ptpool ipt big_log uctxt com1 drv_serial console b intr_flag in_intr io_log.
+  let (CPU_ID, pg, ikern, ihost, HP, cid, init, pperm, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, _, intr_flag, in_intr, io_log) := a in
+  mkRData CPU_ID pg ikern ihost HP cid init pperm ptpool ipt big_log uctxt com1 drv_serial console b intr_flag in_intr io_log.
 Definition update_intr_flag (a : RData) b :=
-  let (CPU_ID, pg, ikern, ihost, HP, cid, init, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, _, in_intr, io_log) := a in
-  mkRData CPU_ID pg ikern ihost HP cid init ptpool ipt big_log uctxt com1 drv_serial console ioapic b in_intr io_log.
+  let (CPU_ID, pg, ikern, ihost, HP, cid, init, pperm, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, _, in_intr, io_log) := a in
+  mkRData CPU_ID pg ikern ihost HP cid init pperm ptpool ipt big_log uctxt com1 drv_serial console ioapic b in_intr io_log.
 Definition update_in_intr (a : RData) b :=
-  let (CPU_ID, pg, ikern, ihost, HP, cid, init, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, _, io_log) := a in
-  mkRData CPU_ID pg ikern ihost HP cid init ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag b io_log.
+  let (CPU_ID, pg, ikern, ihost, HP, cid, init, pperm, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, _, io_log) := a in
+  mkRData CPU_ID pg ikern ihost HP cid init pperm ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag b io_log.
 Definition update_io_log (a : RData) b :=
-  let (CPU_ID, pg, ikern, ihost, HP, cid, init, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, _) := a in
-  mkRData CPU_ID pg ikern ihost HP cid init ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr b.
+  let (CPU_ID, pg, ikern, ihost, HP, cid, init, pperm, ptpool, ipt, big_log, uctxt, com1, drv_serial, console, ioapic, intr_flag, in_intr, _) := a in
+  mkRData CPU_ID pg ikern ihost HP cid init pperm ptpool ipt big_log uctxt com1 drv_serial console ioapic intr_flag in_intr b.
 
 Notation "a '{' 'CPU_ID' : x }" := (update_CPU_ID a x) (at level 1).
 Notation "a '{' 'pg' : x }" := (update_pg a x) (at level 1).
@@ -373,6 +387,7 @@ Notation "a '{' 'ihost' : x }" := (update_ihost a x) (at level 1).
 Notation "a '{' 'HP' : x }" := (update_HP a x) (at level 1).
 Notation "a '{' 'cid' : x }" := (update_cid a x) (at level 1).
 Notation "a '{' 'init' : x }" := (update_init a x) (at level 1).
+Notation "a '{' 'pperm' : x }" := (update_pperm a x) (at level 1).
 Notation "a '{' 'ptpool' : x }" := (update_ptpool a x) (at level 1).
 Notation "a '{' 'ipt' : x }" := (update_ipt a x) (at level 1).
 Notation "a '{' 'big_log' : x }" := (update_big_log a x) (at level 1).
