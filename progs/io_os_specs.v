@@ -624,7 +624,7 @@ Definition getPTE_spec (n i vaddr : Z) (abd : RData) : option Z :=
 Definition getPDE_spec (n i : Z) (abd : RData) : option Z :=
   match (abd.(ikern), abd.(ihost), abd.(init), abd.(ipt), PDE_Arg n i) with
   | (true, true, true, true, true) =>
-    let pt := ZMap.get n (ptpool abd) in
+    let pt := ZMap.get n abd.(ptpool) in
     match ZMap.get i pt with
     | PDEValid pi pdt => Some pi
     | PDEUnPresent => Some 0
@@ -809,15 +809,15 @@ Definition B_GetContainerUsed (tid : Z) (cid : Z) (l : BigLog) : bool :=
   else if zle_le 0 tid TOTAL_CPU then false
   else B_GetContainerUsed_aux tid cid l.
 
-Definition uctx_arg2_spec (adt : RData) : option Z :=
-  let cpu := adt.(CPU_ID) in
-  let curid := ZMap.get adt.(CPU_ID) adt.(cid) in
-  match (adt.(init), adt.(ikern), adt.(pg), adt.(ihost)) with
+Definition uctx_arg2_spec (abd : RData) : option Z :=
+  let cpu := abd.(CPU_ID) in
+  let curid := ZMap.get abd.(CPU_ID) abd.(cid) in
+  match (abd.(init), abd.(ikern), abd.(pg), abd.(ihost)) with
   | (true, true, true, true) =>
-    match adt.(big_log) with
+    match abd.(big_log) with
     | BigDef l =>
       if B_GetContainerUsed curid cpu l then
-        match (ZMap.get U_EBX (ZMap.get curid adt.(uctxt))) with
+        match (ZMap.get U_EBX (ZMap.get curid abd.(uctxt))) with
         | Vint n => Some (Int.unsigned n)
         | _ => None
         end
@@ -827,15 +827,15 @@ Definition uctx_arg2_spec (adt : RData) : option Z :=
   | _ => None
   end.
 
-Definition uctx_arg3_spec (adt : RData) : option Z :=
-  let cpu := adt.(CPU_ID) in
-  let curid := ZMap.get adt.(CPU_ID) adt.(cid) in
-  match (adt.(init), adt.(ikern), adt.(pg), adt.(ihost)) with
+Definition uctx_arg3_spec (abd : RData) : option Z :=
+  let cpu := abd.(CPU_ID) in
+  let curid := ZMap.get abd.(CPU_ID) abd.(cid) in
+  match (abd.(init), abd.(ikern), abd.(pg), abd.(ihost)) with
   | (true, true, true, true) =>
-    match adt.(big_log) with
+    match abd.(big_log) with
     | BigDef l =>
       if B_GetContainerUsed curid cpu l then
-        match (ZMap.get U_ESI (ZMap.get curid adt.(uctxt))) with
+        match (ZMap.get U_ESI (ZMap.get curid abd.(uctxt))) with
         | Vint n => Some (Int.unsigned n)
         | _ => None
         end
@@ -845,34 +845,34 @@ Definition uctx_arg3_spec (adt : RData) : option Z :=
   | _ => None
   end.
 
-Definition uctx_set_retval1_spec (n : Z) (adt : RData) : option RData :=
-  let cpu := adt.(CPU_ID) in
-  let curid := ZMap.get adt.(CPU_ID) adt.(cid) in
-  match (adt.(init), adt.(ikern), adt.(pg), adt.(ihost)) with
+Definition uctx_set_retval1_spec (n : Z) (abd : RData) : option RData :=
+  let cpu := abd.(CPU_ID) in
+  let curid := ZMap.get abd.(CPU_ID) abd.(cid) in
+  match (abd.(init), abd.(ikern), abd.(pg), abd.(ihost)) with
   | (true, true, true, true) =>
-    match adt.(big_log) with
+    match abd.(big_log) with
     | BigDef l =>
       if B_GetContainerUsed curid cpu l then
-        let uctx := ZMap.get curid adt.(uctxt) in
+        let uctx := ZMap.get curid abd.(uctxt) in
         let uctx' := ZMap.set U_EBX (Vint (Int.repr n)) uctx in
-        Some adt {uctxt : ZMap.set curid uctx' adt.(uctxt)}
+        Some abd {uctxt : ZMap.set curid uctx' abd.(uctxt)}
       else None
     | _ => None
     end
   | _ => None
   end.
 
-Definition uctx_set_errno_spec (n : Z) (adt : RData) : option RData :=
-  let cpu := adt.(CPU_ID) in
-  let curid := ZMap.get adt.(CPU_ID) adt.(cid) in
-  match (adt.(init), adt.(ikern), adt.(pg), adt.(ihost)) with
+Definition uctx_set_errno_spec (n : Z) (abd : RData) : option RData :=
+  let cpu := abd.(CPU_ID) in
+  let curid := ZMap.get abd.(CPU_ID) abd.(cid) in
+  match (abd.(init), abd.(ikern), abd.(pg), abd.(ihost)) with
   | (true, true, true, true) =>
-    match adt.(big_log) with
+    match abd.(big_log) with
     | BigDef l =>
       if B_GetContainerUsed curid cpu l then
-        let uctx := ZMap.get curid adt.(uctxt) in
+        let uctx := ZMap.get curid abd.(uctxt) in
         let uctx' := ZMap.set U_EAX (Vint (Int.repr n)) uctx in
-        Some adt {uctxt : ZMap.set curid uctx' adt.(uctxt)}
+        Some abd {uctxt : ZMap.set curid uctx' abd.(uctxt)}
       else None
     | _ => None
     end
