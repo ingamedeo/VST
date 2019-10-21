@@ -101,6 +101,9 @@ Module FlatMem.
   Definition storebytes (h : flatmem) (addr : Z) (bytes : list memval) : flatmem :=
     setN bytes addr h.
 
+  Definition free_page (i : Z) (h : flatmem) :=
+    setN (list_repeat (Z.to_nat 4096) Undef) (i * 4096) h.
+
   Lemma setN_other : forall vs v p q,
     (forall r, p <= r < p + Z_of_nat (length vs) -> r <> q) ->
     ZMap.get q (setN vs p v) = ZMap.get q v.
@@ -575,6 +578,7 @@ Notation E_NOCHAR := 1.
 Notation E_SENDFAIL := 2.
 Notation PAGE_SIZE := 4096.
 Notation MAX_PAGE := 1048576.
+Notation MAGIC_NUMBER := (MAX_PAGE + 1).
 Notation PT_PERM_P := 1.
 Notation PT_PERM_PTKF := 3.
 Notation PT_PERM_PTU := 7.
@@ -593,6 +597,15 @@ Definition PermToZ (p : PTPerm) : Z :=
   | PTU => PT_PERM_PTU
   | PTK false => PT_PERM_PTKF
   | PTK true => PT_PERM_PTKT
+  end.
+
+Definition ZtoPerm (i : Z) : option PTPerm :=
+  match i with
+  | PT_PERM_P => Some PTP
+  | PT_PERM_PTKF => Some (PTK false)
+  | PT_PERM_PTKT => Some (PTK true)
+  | PT_PERM_PTU => Some PTU
+  | _ => None
   end.
 
 Definition PDE_Arg (n i : Z) : bool :=
@@ -643,6 +656,169 @@ Definition ptRead_spec (n vaddr : Z) (abd : RData) : option Z :=
     else None
   | _ => None
   end.
+
+Definition thread_ptRead_spec (n vaddr : Z) (abd : RData) : option Z :=
+  let curid := ZMap.get abd.(CPU_ID) abd.(cid) in
+  if abd.(init) then if zeq curid n then ptRead_spec n vaddr abd else None else None.
+
+(* Find an unallocated range of vaddrs *)
+Definition vaddr_range_free (vaddr len : Z) (abd : RData) : Prop :=
+  let curid := ZMap.get abd.(CPU_ID) abd.(cid) in
+  forall off, 0 <= off < len ->
+    ptRead_spec curid (vaddr + off) abd = None.
+
+Class FindAddr := {
+  find_vaddr : Z -> RData -> option Z;
+  find_vaddr_spec : forall len abd vaddr,
+    let curid := ZMap.get abd.(CPU_ID) abd.(cid) in
+    (find_vaddr len abd = Some vaddr ->
+      vaddr_range_free vaddr len abd) /\
+    (find_vaddr len abd = None ->
+      ~vaddr_range_free vaddr len abd);
+
+    find_paddr : RData -> option Z;
+    find_paddr_spec : forall abd page,
+      (find_paddr abd = Some page ->
+         ZMap.get page abd.(pperm) = PGUndef) /\
+      (find_paddr abd = None ->
+         ZMap.get page abd.(pperm) <> PGUndef);
+}.
+Context `{FindAddr}.
+
+Fixpoint B_GetContainerUsed_aux (tid : Z) (cid : Z) (l : BigLog) : bool :=
+  match l with
+  | nil => false
+  | TBEVENT cpuid e :: l' =>
+    match e with
+    | TBSHARED (BTDSPAWN _ new_id _ _ _ _) =>
+      if zeq cid cpuid then
+        if zeq tid new_id then true else B_GetContainerUsed_aux tid cid l'
+      else B_GetContainerUsed_aux tid cid l'
+    | _ => B_GetContainerUsed_aux tid cid l'
+    end
+  end.
+
+Definition B_GetContainerUsed (tid : Z) (cid : Z) (l : BigLog) : bool :=
+  if zeq tid (cid + 1) then true
+  else if zle_le 0 tid TOTAL_CPU then false
+  else B_GetContainerUsed_aux tid cid l.
+
+Definition big2_palloc_spec (n : Z) (abd : RData) : option (RData * Z) :=
+  let cpu := abd.(CPU_ID) in
+  let curid := ZMap.get abd.(CPU_ID) abd.(cid) in
+  if zeq n curid then
+    match (abd.(init), abd.(ikern), abd.(ihost), abd.(pg), abd.(ipt)) with
+    | (true, true, true, true, true) =>
+      match big_log abd with
+      | BigDef l =>
+        if B_GetContainerUsed curid cpu l then
+          match find_paddr abd with
+          | Some page =>
+              let l' := TBEVENT cpu (TBSHARED (BPALLOCE curid page)) :: l in
+              Some (abd {big_log : BigDef l'}
+                        {pperm : ZMap.set page PGAlloc abd.(pperm)}, page)
+          | _ =>
+              let l' := TBEVENT cpu (TBSHARED (BPALLOCE curid 0)) :: l in
+              Some (abd {big_log : BigDef l'}, 0)
+          end
+        else None
+      | _ => None
+      end
+    | _ => None
+    end
+  else None.
+
+Definition big2_ptInsertPTE0_spec (n vaddr paddr : Z) (p : PTPerm) (abd : RData) : option RData :=
+  match (abd.(init), abd.(ikern), abd.(ihost), abd.(ipt), abd.(pg)) with
+  | (true, true, true, true, true) =>
+    let pt := ZMap.get n abd.(ptpool) in
+    let pdi := PDX vaddr in
+    let pti := PTX vaddr in
+    match (ZMap.get pdi pt, ZMap.get paddr abd.(pperm))  with
+    | (PDEValid pi pdt, PGAlloc) =>
+      match ZMap.get pti pdt with
+      | PTEValid _ _ => None
+      | _ =>
+        let pdt':= ZMap.set pti (PTEValid paddr p) pdt in
+        let pt' := ZMap.set pdi (PDEValid pi pdt') pt in
+        Some abd {ptpool : ZMap.set n pt' abd.(ptpool)}
+      end
+    | _ => None
+    end
+  | _ => None
+  end.
+
+Fixpoint Calculate_init_pte (i : nat) : PTE :=
+  match i with
+  | O => ZMap.set 0 PTEUnPresent (ZMap.init PTEUndef)
+  | S k => ZMap.set (Z.of_nat (S k)) PTEUnPresent (Calculate_init_pte k)
+  end.
+
+Definition real_init_PTE : PTE := Calculate_init_pte (Z.to_nat (1024 - 1)).
+
+Definition big2_ptAllocPDE_spec (n vaddr : Z) (abd : RData) : option (RData * Z) :=
+  let pdi := PDX vaddr in
+  match (abd.(init), abd.(ikern), abd.(ihost), abd.(ipt), abd.(pg)) with
+  | (true, true, true, true, true) =>
+    match ZMap.get pdi (ZMap.get n abd.(ptpool)) with
+    | PDEUnPresent =>
+      match big2_palloc_spec n abd with
+      | Some (abd', pi) =>
+        if zeq pi 0 then Some (abd', pi)
+        else
+          Some (abd' {HP : FlatMem.free_page pi abd'.(HP)}
+                     {pperm : ZMap.set pi (PGHide (PGPMap n pdi)) abd'.(pperm)}
+                     {ptpool : (ZMap.set n (ZMap.set pdi (PDEValid pi real_init_PTE)
+                                 (ZMap.get n abd'.(ptpool))) abd'.(ptpool))}, pi)
+      | _ => None
+      end
+    | _ => None
+    end
+  | _ => None
+  end.
+
+Definition big2_ptInsert_spec (n vaddr paddr perm : Z) (abd : RData) : option (RData * Z) :=
+  match (abd.(init), abd.(ikern), abd.(ihost), abd.(ipt), abd.(pg)) with
+  | (true, true, true, true, true) =>
+    match ZtoPerm perm with
+    | Some p =>
+      let pt := ZMap.get n abd.(ptpool) in
+      let pdi := PDX vaddr in
+      let pti := PTX vaddr in
+      match ZMap.get pdi pt with
+      | PDEValid pi pdt =>
+        match big2_ptInsertPTE0_spec n vaddr paddr p abd with
+        | Some abd' => Some (abd', 0)
+        | _ => None
+        end
+      | PDEUnPresent =>
+        match big2_ptAllocPDE_spec n vaddr abd with
+        | Some (abd', v) =>
+          if zeq v 0 then Some (abd', MAGIC_NUMBER)
+          else
+            match big2_ptInsertPTE0_spec n vaddr paddr p abd' with
+            | Some abd'' => Some (abd'', v)
+            | _ => None
+            end
+        | _ => None
+        end
+      | _ => None
+      end
+    | _ => None
+    end
+  | _ => None
+  end.
+
+Definition big2_ptResv_spec (n vaddr perm : Z) (abd : RData) : option (RData * Z) :=
+  let curid := ZMap.get abd.(CPU_ID) abd.(cid) in
+  if zeq n curid then
+    match big2_palloc_spec n abd with
+    | Some (abd', b) =>
+      if zeq b 0 then Some (abd', MAGIC_NUMBER)
+      else big2_ptInsert_spec n vaddr b perm abd'
+    | _ => None
+    end
+  else None.
 
 Definition get_kernel_pa_spec (pid vaddr : Z) (abd : RData) : option Z :=
   match abd.(pg) with
@@ -791,24 +967,6 @@ Definition thread_serial_intr_disable_spec (abd : RData) : option RData :=
   then if abd.(init) then serial_intr_disable_spec abd else None else None.
 
 (** User context *)
-Fixpoint B_GetContainerUsed_aux (tid : Z) (cid : Z) (l : BigLog) : bool :=
-  match l with
-  | nil => false
-  | TBEVENT cpuid e :: l' =>
-    match e with
-    | TBSHARED (BTDSPAWN _ new_id _ _ _ _) =>
-      if zeq cid cpuid then
-        if zeq tid new_id then true else B_GetContainerUsed_aux tid cid l'
-      else B_GetContainerUsed_aux tid cid l'
-    | _ => B_GetContainerUsed_aux tid cid l'
-    end
-  end.
-
-Definition B_GetContainerUsed (tid : Z) (cid : Z) (l : BigLog) : bool :=
-  if zeq tid (cid + 1) then true
-  else if zle_le 0 tid TOTAL_CPU then false
-  else B_GetContainerUsed_aux tid cid l.
-
 Definition uctx_arg2_spec (abd : RData) : option Z :=
   let cpu := abd.(CPU_ID) in
   let curid := ZMap.get abd.(CPU_ID) abd.(cid) in
@@ -1034,6 +1192,33 @@ Definition sys_getcs_spec (abd : RData) : option RData :=
     | None => None
     end
   | _, _ => None
+  end.
+
+Definition sys_mmap_spec (abd : RData) : option RData :=
+  let curid := ZMap.get abd.(CPU_ID) abd.(cid) in
+  match uctx_arg2_spec abd with
+  | Some len =>
+    match find_vaddr len abd with
+    | Some vaddr =>
+      match big2_ptResv_spec curid vaddr PT_PERM_PTU abd with
+      | Some (d1, ret) =>
+        if zeq ret MAGIC_NUMBER then None else
+        match thread_ptRead_spec curid vaddr d1 with
+        | Some pi =>
+          if zeq pi 0 then None else
+          let d2 := d1 {HP :
+            FlatMem.setN (list_repeat (Z.to_nat len) Undef) (pi * 4096) d1.(HP)} in
+          match uctx_set_retval1_spec vaddr d2 with
+          | Some d3 => uctx_set_errno_spec E_SUCC d3
+          | None => None
+          end
+        | None => None
+        end
+      | None => None
+      end
+    | None => None
+    end
+  | None => None
   end.
 
 End Specs.
