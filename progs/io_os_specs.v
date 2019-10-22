@@ -625,7 +625,7 @@ Definition getPTE_spec (n i vaddr : Z) (abd : RData) : option Z :=
     match ZMap.get i pt with
     | PDEValid _ pdt =>
       match ZMap.get vaddr pdt with
-      | PTEValid padr p => Some (padr * PAGE_SIZE + PermToZ p)
+      | PTEValid pi p => Some (pi * PAGE_SIZE + PermToZ p)
       | PTEUnPresent => Some 0
       | _ => None
       end
@@ -679,6 +679,7 @@ Class FindAddr := {
     find_paddr : RData -> option Z;
     find_paddr_spec : forall abd page,
       (find_paddr abd = Some page ->
+         page <> 0 /\
          ZMap.get page abd.(pperm) = PGUndef) /\
       (find_paddr abd = None ->
          ZMap.get page abd.(pperm) <> PGUndef);
@@ -1200,21 +1201,24 @@ Definition sys_mmap_spec (abd : RData) : option RData :=
   | Some len =>
     match find_vaddr len abd with
     | Some vaddr =>
-      match big2_ptResv_spec curid vaddr PT_PERM_PTU abd with
-      | Some (d1, ret) =>
-        if zeq ret MAGIC_NUMBER then None else
-        match thread_ptRead_spec curid vaddr d1 with
-        | Some pi =>
-          if zeq pi 0 then None else
-          let d2 := d1 {HP :
-            FlatMem.setN (list_repeat (Z.to_nat len) Undef) (pi * 4096) d1.(HP)} in
-          match uctx_set_retval1_spec vaddr d2 with
-          | Some d3 => uctx_set_errno_spec E_SUCC d3
+      match (zle_lt 0 vaddr Int.max_unsigned, zeq (vaddr mod PAGE_SIZE) 0, zlt len PAGE_SIZE) with
+      | (left _, left _, left _) =>
+        match big2_ptResv_spec curid vaddr PT_PERM_PTU abd with
+        | Some (d1, ret) =>
+          if zeq ret MAGIC_NUMBER then None else
+          match get_kernel_pa_spec curid vaddr d1 with
+          | Some paddr =>
+            let d2 := d1 {HP :
+              FlatMem.setN (list_repeat (Z.to_nat len) Undef) paddr d1.(HP)} in
+            match uctx_set_retval1_spec vaddr d2 with
+            | Some d3 => uctx_set_errno_spec E_SUCC d3
+            | None => None
+            end
           | None => None
           end
         | None => None
         end
-      | None => None
+      | _ => None
       end
     | None => None
     end

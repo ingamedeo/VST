@@ -2494,17 +2494,56 @@ Section SpecsCorrect.
 
   Context `{FindAddr}.
 
-(* big2_palloc_spec *)
-(* big2_ptInsertPTE0_spec *)
-(* big2_ptAllocPDE_spec *)
-(* big2_ptInsert_spec *)
-(* big2_ptResv_spec *)
-(* sys_mmap_spec *)
+  Lemma init_pte_unpresent : forall len i, 0 <= i <= Z.of_nat len ->
+    ZMap.get i (Calculate_init_pte len) = PTEUnPresent.
+  Proof.
+    induction len; cbn -[Z.of_nat]; intros.
+    { assert (i = 0) by lia; subst.
+      rewrite ZMap.gss; auto.
+    }
+    assert (0 <= i <= Z.of_nat len \/ i = Z.of_nat (S len)) as [? | ?] by lia;
+      subst; [rewrite ZMap.gso by lia | rewrite ZMap.gss]; auto.
+  Qed.
+
+  Lemma ptRead_spec_same_page : forall st pid vaddr ofs paddr,
+    let vaddr' := vaddr + ofs in
+    paddr <> 0 ->
+    PDX vaddr = PDX vaddr' ->
+    PTX vaddr = PTX vaddr' ->
+    ptRead_spec pid vaddr st = Some paddr ->
+    ptRead_spec pid vaddr' st = Some paddr.
+  Proof.
+    unfold ptRead_spec; intros * ? Hpdx Hptx Hpaddr.
+    destruct_spec Hpaddr; try easy.
+    prename getPDE_spec into Hpde.
+    rewrite <- Hptx, <- Hpdx, Hpde.
+    destruct (Coqlib.zeq _ _); try easy.
+    now destruct (zlt_lt _ _ _).
+  Qed.
+
+  Lemma get_kernel_pa_same_page : forall st pid vaddr ofs paddr,
+    let vaddr' := vaddr + ofs in
+    (* TODO: stronger than necessary *)
+    vaddr mod PAGE_SIZE = 0 -> 0 <= ofs < PAGE_SIZE ->
+    PDX vaddr = PDX vaddr' ->
+    PTX vaddr = PTX vaddr' ->
+    get_kernel_pa_spec pid vaddr st = Some paddr ->
+    get_kernel_pa_spec pid vaddr' st = Some (paddr + ofs).
+  Proof.
+    unfold get_kernel_pa_spec; intros * ? ? ? ? Hpaddr.
+    destruct_spec Hpaddr.
+    erewrite ptRead_spec_same_page; eauto.
+    destruct (Coqlib.zeq z 0); try easy.
+    enough ((vaddr + ofs) mod 4096 = vaddr mod 4096 + ofs) as ->; auto with zarith.
+    rewrite <- (Z.mod_small (vaddr mod 4096 + ofs) 4096) by lia.
+    rewrite Z.add_mod_idemp_l; lia.
+  Qed.
 
   Lemma big2_palloc_spec_mem_changed : forall st st' n pi,
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     big2_palloc_spec n st = Some (st', pi) ->
+    pid = pid' /\
     st.(HP) = st'.(HP) /\
     (forall vaddr, get_kernel_pa_spec pid vaddr st = get_kernel_pa_spec pid' vaddr st') /\
     (forall pi',
@@ -2515,30 +2554,16 @@ Section SpecsCorrect.
     unfold big2_palloc_spec; intros * Hspec; destruct_spec Hspec.
     all: destruct st; cbn in *; repeat (split; auto); intros; subst; try easy.
     - rewrite ZMap.gss; auto.
-    - assert (forall abd, find_paddr abd <> Some 0) by admit.
-      exfalso; eapply H1; eauto.
+    - prename find_paddr into Hpaddr.
+      eapply find_paddr_spec in Hpaddr; easy.
     - rewrite ZMap.gso; auto.
-  Admitted.
-
-Notation ADDR_LO := 1073741824.
-Notation ADDR_HI := 4026531840.
-
-  Definition pt_Arg' (n vaddr : Z) : bool :=
-    if zlt_lt 0 n NUM_PROC then
-      if zle_lt ADDR_LO vaddr  ADDR_HI then true
-      else false
-    else false.
-
-  Definition pt_Arg (n vaddr pi np : Z) : bool :=
-    if pt_Arg' n vaddr then
-      if zlt_lt 0 pi np then true
-      else false
-    else false.
+  Qed.
 
   Lemma big2_ptInsertPTE0_spec_mem_changed : forall st st' n vaddr pi p,
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     big2_ptInsertPTE0_spec n vaddr pi p st = Some st' ->
+    pid = pid' /\
     st.(HP) = st'.(HP) /\
     (forall vaddr',
       (pid = n -> PDX vaddr = PDX vaddr' -> PTX vaddr = PTX vaddr' ->
@@ -2551,17 +2576,22 @@ Notation ADDR_HI := 4026531840.
     all: destruct st; cbn in *; repeat (split; auto).
     - intros ? Hpdx Hptx; subst.
       unfold get_kernel_pa_spec, ptRead_spec, getPDE_spec, PTE_Arg, PDE_Arg; cbn.
-      destruct (zle_lt _ _ _); try lia.
-      destruct (zle_le _ _ _); try lia.
+      destruct (zle_lt _ _ _).
+      2: admit. (* TODO: OS invariant, curid in range *)
+      destruct (zle_le _ _ _).
+      2: admit. (* TODO: OS invariant, vaddr range *)
       rewrite Hpdx, Hptx, !ZMap.gss.
       destruct (Coqlib.zeq _ _).
-      2:{
-      destruct (zlt_lt _ _ _); try lia.
+      admit. (* TODO: OS invariant, PDEValid pi <> 0 *)
+      destruct (zlt_lt _ _ _).
+      2: admit. (* TODO: OS invariant, PDEValid pi range *)
       unfold PTE_Arg, PDE_Arg.
       destruct (zle_lt _ _ _); try lia.
+      destruct (zle_le _ _ _).
+      2: cbn in *; lia.
       destruct (zle_le _ _ _); try lia.
-      destruct (zle_le _ _ _); try lia.
-      destruct (Coqlib.zeq _ _); try lia.
+      2: admit. (* TODO: OS invariant, vaddr range *)
+      destruct (Coqlib.zeq _ _).
       { destruct p; cbn [PermToZ] in *; try lia.
         destruct b; lia.
       }
@@ -2569,13 +2599,6 @@ Notation ADDR_HI := 4026531840.
       rewrite Z.mul_comm, Z.mul_cancel_l, Z.div_add_l by lia.
       destruct p; cbn; try lia.
       destruct b; cbn; lia.
-      admit.
-      admit.
-      admit.
-      }
-      admit.
-      admit.
-      admit.
     - intros Hneq; unfold get_kernel_pa_spec, ptRead_spec; cbn.
       destruct Hneq.
       { rewrite ZMap.gso; auto. }
@@ -2584,17 +2607,22 @@ Notation ADDR_HI := 4026531840.
       rewrite ZMap.gss, ZMap.gso; auto.
     - intros ? Hpdx Hptx; subst.
       unfold get_kernel_pa_spec, ptRead_spec, getPDE_spec, PTE_Arg, PDE_Arg; cbn.
-      destruct (zle_lt _ _ _); try lia.
-      destruct (zle_le _ _ _); try lia.
+      destruct (zle_lt _ _ _).
+      2: admit. (* TODO: OS invariant, curid in range *)
+      destruct (zle_le _ _ _).
+      2: admit. (* TODO: OS invariant, vaddr range *)
       rewrite Hpdx, Hptx, !ZMap.gss.
       destruct (Coqlib.zeq _ _).
-      2:{
-      destruct (zlt_lt _ _ _); try lia.
+      admit. (* TODO: OS invariant, PDEValid pi <> 0 *)
+      destruct (zlt_lt _ _ _).
+      2: admit. (* TODO: OS invariant, PDEValid pi range *)
       unfold PTE_Arg, PDE_Arg.
       destruct (zle_lt _ _ _); try lia.
+      destruct (zle_le _ _ _).
+      2: cbn in *; lia.
       destruct (zle_le _ _ _); try lia.
-      destruct (zle_le _ _ _); try lia.
-      destruct (Coqlib.zeq _ _); try lia.
+      2: admit. (* TODO: OS invariant, vaddr range *)
+      destruct (Coqlib.zeq _ _).
       { destruct p; cbn [PermToZ] in *; try lia.
         destruct b; lia.
       }
@@ -2602,13 +2630,6 @@ Notation ADDR_HI := 4026531840.
       rewrite Z.mul_comm, Z.mul_cancel_l, Z.div_add_l by lia.
       destruct p; cbn; try lia.
       destruct b; cbn; lia.
-      admit.
-      admit.
-      admit.
-      }
-      admit.
-      admit.
-      admit.
     - intros Hneq; unfold get_kernel_pa_spec, ptRead_spec; cbn.
       destruct Hneq.
       { rewrite ZMap.gso; auto. }
@@ -2621,6 +2642,7 @@ Notation ADDR_HI := 4026531840.
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     big2_ptAllocPDE_spec n vaddr st = Some (st', pi) ->
+    pid = pid' /\
     (pi = 0 ->
       st.(HP) = st'.(HP) /\
       (forall vaddr', get_kernel_pa_spec pid vaddr' st = get_kernel_pa_spec pid' vaddr' st') /\
@@ -2639,14 +2661,15 @@ Notation ADDR_HI := 4026531840.
     unfold big2_ptAllocPDE_spec; intros * Hspec; destruct_spec Hspec.
     - prename big2_palloc_spec into Hspec.
       apply big2_palloc_spec_mem_changed in Hspec.
-      split; intros; try easy.
-      destruct Hspec as (? & ? & Hperm).
+      split; [| split]; intros; try easy.
+      destruct Hspec as (? & ? & ? & Hperm).
       repeat (split; auto).
       apply Hperm; auto.
     - prename big2_palloc_spec into Hspec.
       apply big2_palloc_spec_mem_changed in Hspec.
-      split; intros; try easy.
-      destruct Hspec as (<- & Haddr & Hperm).
+      destruct Hspec as (-> & <- & Haddr & Hperm).
+      split; [| split]; intros; try easy.
+      { destruct r; auto. }
       split; [| split].
       + destruct r; cbn -[FlatMem.free_page real_init_PTE]; auto.
       + intros; split.
@@ -2656,28 +2679,20 @@ Notation ADDR_HI := 4026531840.
           destruct pg, ikern, ihost, init, ipt; auto.
           destruct (zle_lt _ _ _); auto.
           destruct (zle_le _ _ _); auto.
-
-          assert (ZMap.get CPU_ID cid = ZMap.get (io_os_specs.CPU_ID st) (io_os_specs.cid st)) by admit.
-          rewrite H2.
-
           rewrite Hpdx, !ZMap.gss.
           destruct (Coqlib.zeq _ _); auto.
           destruct (zlt_lt _ _ _); auto.
           destruct (PTE_Arg _ _ _); auto.
-
-          assert (ZMap.get (PTX vaddr') real_init_PTE = PTEUnPresent) by admit.
-          rewrite H3.
-
-          auto.
+          replace (ZMap.get (PTX vaddr') real_init_PTE) with PTEUnPresent; auto.
+          unfold real_init_PTE.
+          rewrite init_pte_unpresent; auto.
+          unfold PTX; rewrite Z2Nat.id by lia.
+          pose proof (Z.mod_pos_bound (vaddr' / 4096) 1024); lia.
         * intros Hneq.
           rewrite Haddr.
           destruct r; unfold get_kernel_pa_spec, ptRead_spec; cbn -[FlatMem.free_page real_init_PTE].
           destruct pg, ikern, ihost, init, ipt; auto.
           destruct (PDE_Arg _ _); auto.
-
-          assert (ZMap.get CPU_ID cid = ZMap.get (io_os_specs.CPU_ID st) (io_os_specs.cid st)) by admit.
-          rewrite <- H2 in *.
-
           destruct Hneq.
           { rewrite ZMap.gso; auto. }
           destruct (Coqlib.zeq (ZMap.get CPU_ID cid) n); subst.
@@ -2689,12 +2704,13 @@ Notation ADDR_HI := 4026531840.
         * cbn in Hperm; specialize (Hperm pi').
           destruct Hperm as (_ & _ & Hperm).
           rewrite ZMap.gso; auto.
-  Admitted.
+  Qed.
 
   Lemma big2_ptInsert_spec_mem_changed : forall st st' n vaddr pi p pi',
     let pid := ZMap.get st.(CPU_ID) st.(cid) in
     let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in
     big2_ptInsert_spec n vaddr pi p st = Some (st', pi') ->
+    pid = pid' /\
     (pi' = 0 ->
       st.(HP) = st'.(HP) /\
       (forall vaddr',
@@ -2721,22 +2737,20 @@ Notation ADDR_HI := 4026531840.
     unfold big2_ptInsert_spec; intros * Hspec; destruct_spec Hspec.
     - prename big2_ptInsertPTE0_spec into Hspec.
       apply big2_ptInsertPTE0_spec_mem_changed in Hspec.
-      split; [| split]; intros; auto; try easy.
+      easy.
     - prename big2_ptAllocPDE_spec into Hspec.
       apply big2_ptAllocPDE_spec_mem_changed in Hspec.
-      split; [| split]; intros; try easy.
+      split; [| split; [| split]]; intros; try easy.
       apply Hspec; auto.
-    - assert (pi' <> MAGIC_NUMBER) by admit.
+    - assert (pi' <> MAGIC_NUMBER) by admit. (* TODO: OS invariant *)
       prename big2_ptAllocPDE_spec into Hspec.
       apply big2_ptAllocPDE_spec_mem_changed in Hspec.
       prename big2_ptInsertPTE0_spec into Hspec'.
       apply big2_ptInsertPTE0_spec_mem_changed in Hspec'.
-      split; [| split]; intros; auto; try easy.
-      destruct Hspec as (_ & Hspec); destruct Hspec as (-> & Haddr & Hperm); auto.
-      destruct Hspec' as (? & Haddr' & Hperm').
-
-      assert (ZMap.get (CPU_ID st) (cid st) = ZMap.get (CPU_ID r) (cid r)) by admit.
-
+      destruct Hspec as (-> & _ & (-> & Haddr & Hperm)); auto.
+      destruct Hspec' as (Hpid & -> & Haddr' & Hperm').
+      rewrite Hpid in *.
+      split; [| split; [|split ]]; intros; auto; try easy.
       repeat (split; auto).
       + intros; subst.
         apply Haddr'; auto.
@@ -2750,40 +2764,6 @@ Notation ADDR_HI := 4026531840.
         rewrite <- Hperm'.
         apply Hperm; auto.
   Admitted.
-
-  (* Lemma sys_mmap_spec_mem_changed : forall st st' n len vaddr p pi pi', *)
-  (*   let pid := ZMap.get st.(CPU_ID) st.(cid) in *)
-  (*   let pid' := ZMap.get st'.(CPU_ID) st'.(cid) in *)
-  (*   get_sys_arg1 abd = Some len -> *)
-  (*   get_sys_ret abd = Some vaddr -> *)
-  (*   sys_mmap_spec st = Some st' -> *)
-  (*   FlatMem.free_page pi' st.(HP) = st'.(HP) /\ *)
-  (*   (forall vaddr', *)
-  (*     (pid = n -> PDX vaddr = PDX vaddr' -> PTX vaddr = PTX vaddr' -> *)
-  (*       get_kernel_pa_spec pid' vaddr' st' = Some (PAGE_SIZE * pi + vaddr' mod PAGE_SIZE)) /\ *)
-  (*     (pid <> n \/ PDX vaddr <> PDX vaddr' -> *)
-  (*       get_kernel_pa_spec pid vaddr' st = get_kernel_pa_spec pid' vaddr' st')) /\ *)
-  (*   (forall pi'', *)
-  (*     (pi' = pi'' -> ZMap.get pi' st'.(pperm) = PGHide (PGPMap n (PDX vaddr))) /\ *)
-  (*     (pi' <> pi'' -> ZMap.get pi'' st.(pperm) = ZMap.get pi'' st'.(pperm))). *)
-  (* Proof. *)
-  (*   unfold sys_mmap_spec; intros * Hspec; destruct_spec Hspec. *)
-  (*   - prename big2_ptInsertPTE0_spec into Hspec. *)
-  (*     apply big2_ptInsertPTE0_spec_mem_changed in Hspec. *)
-  (*     split; [| split]; intros; auto; try easy. *)
-  (*   - prename big2_ptAllocPDE_spec into Hspec. *)
-  (*     apply big2_ptAllocPDE_spec_mem_changed in Hspec. *)
-  (*     split; [| split]; intros; try easy. *)
-  (*     apply Hspec; auto. *)
-  (*   - assert (pi' <> MAGIC_NUMBER) by admit. *)
-  (*     prename big2_ptAllocPDE_spec into Hspec. *)
-  (*     apply big2_ptAllocPDE_spec_mem_changed in Hspec. *)
-  (*     prename big2_ptInsertPTE0_spec into Hspec'. *)
-  (*     apply big2_ptInsertPTE0_spec_mem_changed in Hspec'. *)
-  (*     split; [| split]; intros; auto; try easy. *)
-  (*     destruct Hspec as (_ & Hspec); destruct Hspec as (-> & Haddr & Hperm); auto. *)
-  (*     destruct Hspec' as (? & Haddr' & Hperm'). *)
-
 
   Lemma sys_mmap_correct len m st st' :
     R_mem m st ->
@@ -2809,70 +2789,50 @@ Notation ADDR_HI := 4026531840.
     unfold uctx_arg2_spec in Hspec; destruct_spec Hspec.
     prename big2_ptResv_spec into Hspec.
     unfold big2_ptResv_spec in Hspec; destruct_spec Hspec.
-    prename thread_ptRead_spec into Hread.
-    unfold thread_ptRead_spec in Hread; destruct_spec Hread.
+    prename get_kernel_pa_spec into Hpaddr.
     destruct r; cbn -[big2_ptInsert_spec] in *.
     repeat (rewrite ZMap.gss in * || rewrite ZMap.gso in * by easy); subst; inj.
-    rewrite Int.unsigned_repr in * by functional_base.rep_omega.
     do 2 esplit; eauto; intros.
-
-    assert (0 <= z0 <= Int.max_unsigned) by admit.
-    rewrite Int.unsigned_repr in * by functional_base.rep_omega; subst.
-
+    prename Coqlib.zlt into Htmp; clear Htmp. (* rewrite fails on len < 4096 otherwise *)
+    rewrite Int.unsigned_repr in * by functional_base.rep_omega.
     prename big2_palloc_spec into Hspec'; pose proof Hspec' as Htmp.
-    apply big2_palloc_spec_mem_changed in Htmp as (Hmem_eq & Haddr_eq & Hperm_eq).
+    apply big2_palloc_spec_mem_changed in Htmp as (Hpid & Hmem_eq & Haddr_eq & Hperm_eq).
     pose proof Hspec as Htmp.
     apply big2_ptInsert_spec_mem_changed in Htmp.
     cbn -[FlatMem.free_page get_kernel_pa_spec] in Htmp.
-    destruct Htmp as (Hcase1 & _ & Hcase2).
-
+    destruct Htmp as (Hpid' & Hcase1 & _ & Hcase2).
+    rewrite Hpid, Hpid' in *.
     esplit; constructor; hnf; eauto.
     (* R_mem *)
     cbn -[get_kernel_pa_spec].
-    intros * Hpaddr Halloc Hperm.
+    intros * Hpaddr' Halloc Hperm.
     assert (alloc m 0 len = (fst (alloc m 0 len), m.(nextblock))).
     { Local Transparent alloc. unfold alloc; cbn; auto. Local Opaque alloc. }
     eapply perm_alloc_inv in Hperm; eauto.
     destruct (eq_block b m.(nextblock)); subst.
     - erewrite mem_lemmas.AllocContentsUndef1; eauto.
-      (* 0 <= ofs < len,
-         paddr = va2pa (b + ofs) *)
       destruct (Coqlib.zeq z1 0); subst.
       + destruct Hcase1 as (? & Haddr_eq' & ?); subst; auto.
         rewrite <- Hmem_eq.
-
         rewrite FlatMem.setN_inside.
         { rewrite data_at_rec_lemmas.nth_list_repeat; auto. }
         Search length Coqlib.list_repeat.
         rewrite Coqlib.length_list_repeat, Z2Nat.id; try lia.
-
-        (* assert (paddr = z2). *)
-        (* { enough (Some paddr = Some z2) by (inj; auto). *)
-        (*   rewrite Hpaddr, <- Hread. *)
-
-        (*   assert (ZMap.get (io_os_specs.CPU_ID st) (io_os_specs.cid st) = ZMap.get CPU_ID cid) by admit. *)
-        (*   rewrite H4 in *. *)
-
-
-        (*   unfold get_kernel_pa_spec, ptRead_spec; cbn. *)
-        (*   destruct ipt; auto. *)
-        (* Hread *)
-        (* Hpaddr *)
-        (* paddr *)
-        admit.
+        rewrite get_kernel_pa_same_page with (paddr := z2) in Hpaddr'; inj; try lia; auto.
+        admit. admit. (* TODO: arith *)
       + destruct Hcase2 as (? & Haddr_eq' & Hperm_eq'); subst; auto.
-        admit.
-
-         (* Hmem_eq *)
-         (* Hcase1 *)
-         (* Hmem_eq' *)
-
-    - assert (z <> paddr / 4096) by admit.
-      assert (z1 <> paddr / 4096) by admit.
-
+        rewrite <- Hmem_eq.
+        rewrite FlatMem.setN_inside.
+        { rewrite data_at_rec_lemmas.nth_list_repeat; auto. }
+        Search length Coqlib.list_repeat.
+        rewrite Coqlib.length_list_repeat, Z2Nat.id; try lia.
+        rewrite get_kernel_pa_same_page with (paddr := z2) in Hpaddr'; inj; try lia; auto.
+        admit. admit. (* TODO: arith *)
+    - assert (z <> paddr / 4096) by admit. (* TODO: OS invariant *)
+      assert (z1 <> paddr / 4096) by admit. (* TODO: OS invariant *)
       erewrite mem_lemmas.AllocContentsOther; eauto.
       hnf in HRmem; cbn in HRmem; specialize (HRmem b ofs paddr).
-      rewrite Hmem_eq, Haddr_eq in HRmem.
+      rewrite Hpid, Hmem_eq, Haddr_eq in HRmem.
       specialize (Hperm_eq (paddr / 4096)).
       destruct Hperm_eq as (_ & _ & Hperm_eq).
       rewrite Hperm_eq in HRmem; auto.
@@ -2880,35 +2840,29 @@ Notation ADDR_HI := 4026531840.
       + destruct Hcase1 as (? & Haddr_eq' & ?); subst; auto.
         specialize (Haddr_eq' (b2a.(b2a_map) b + ofs)).
         destruct Haddr_eq' as (_ & Haddr_eq').
-
-        assert (PDX (b2a_map b2a (nextblock m)) <> PDX (b2a_map b2a b + ofs)) by admit.
-        specialize (Haddr_eq' (or_intror H6)).
-
-        rewrite Haddr_eq', Hpaddr in HRmem.
+        (* TODO: arith *)
+        assert (Hpdx: PDX (b2a_map b2a (nextblock m)) <> PDX (b2a_map b2a b + ofs)) by admit.
+        specialize (Haddr_eq' (or_intror Hpdx)).
+        rewrite Haddr_eq', Hpaddr' in HRmem.
         rewrite FlatMem.setN_outside.
         apply HRmem; auto.
-        rewrite Coqlib.length_list_repeat, Z2Nat.id; try lia.
-        admit.
+        rewrite Coqlib.length_list_repeat, Z2Nat.id by lia.
+        admit. (* TODO: arith *)
       + destruct Hcase2 as (? & Haddr_eq' & Hperm_eq'); subst; auto.
         specialize (Haddr_eq' (b2a.(b2a_map) b + ofs)).
         destruct Haddr_eq' as (_ & Haddr_eq').
-
-        assert (PDX (b2a_map b2a (nextblock m)) <> PDX (b2a_map b2a b + ofs)) by admit.
-        specialize (Haddr_eq' (or_intror H6)).
-
-        rewrite Haddr_eq', Hpaddr in HRmem.
+        (* TODO: arith *)
+        assert (Hpdx: PDX (b2a_map b2a (nextblock m)) <> PDX (b2a_map b2a b + ofs)) by admit.
+        specialize (Haddr_eq' (or_intror Hpdx)).
+        rewrite Haddr_eq', Hpaddr' in HRmem.
         specialize (HRmem ltac:(auto)).
-
         specialize (Hperm_eq' (paddr / 4096)).
         destruct Hperm_eq' as (_ & Hperm_eq').
         rewrite Hperm_eq' in HRmem; auto.
-
-        assert (ZMap.get paddr (FlatMem.free_page z1 (HP r0)) = ZMap.get paddr (HP r0)) by admit.
-        rewrite FlatMem.setN_outside, H7.
-
+        unfold FlatMem.free_page; rewrite !FlatMem.setN_outside.
         apply HRmem; auto.
-        rewrite Coqlib.length_list_repeat, Z2Nat.id; try lia.
-        admit.
+        all: rewrite Coqlib.length_list_repeat, Z2Nat.id by lia.
+        admit. admit. (* TODO: arith *)
   Admitted.
 
 End SpecsCorrect.
