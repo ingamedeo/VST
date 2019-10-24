@@ -855,7 +855,7 @@ Definition main_pre_juicy {Z} prog (ora : Z) ts gv (x' : rmap * {ts : list Type 
     Val.has_type_list args [] /\
 (*    (exists phi0 phi1 : rmap,
        join phi0 phi1 (m_phi m) /\*)
-       (app_pred (main_pre prog ora ts gv
+       (app_pred (main_pre_ext prog ora ts gv
           (seplog.make_args [] [] (empty_environ (semax_ext.symb2genv ge_s))))
          (m_phi m) (*phi0 /\
        necR (fst x') phi1*) /\ joins (ghost_of (m_phi m)) [Some (ext_ref z, NoneP)]).
