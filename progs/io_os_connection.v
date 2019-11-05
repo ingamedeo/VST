@@ -227,6 +227,23 @@ Section ListFacts.
 
 End ListFacts.
 
+Local Open Scope monad_scope.
+Local Open Scope Z.
+
+Lemma div_plus : forall x y z w,
+  x mod z = 0 ->
+  0 < w ->
+  0 <= y < z ->
+  (x + y) / (z * w) = x / (z * w).
+Proof.
+  intros * Hmod ? ?.
+  rewrite Z.mod_divide in Hmod by lia.
+  destruct Hmod as (x' & ?); subst.
+  rewrite <- Z.div_div, Z.div_add_l by lia.
+  rewrite (Z.mul_comm z w), Z.div_mul_cancel_r by lia.
+  now rewrite (Z.div_small y z), Z.add_0_r by lia.
+Qed.
+
 Definition lex_lt (p1 p2 : Z * Z) : Prop :=
   let (x1, y1) := p1 in let (x2, y2) := p2 in
   (x1 < x2 \/ x1 = x2 /\ y1 < y2)%Z.
@@ -235,9 +252,6 @@ Local Infix "<l" := lex_lt (at level 70).
 Definition lex_le (p1 p2 : Z * Z) : Prop :=
   p1 = p2 \/ p1 <l p2 .
 Local Infix "<=l" := lex_le (at level 70).
-
-Local Open Scope monad_scope.
-Local Open Scope Z.
 
 (* Weaker pre condition using trace_incl instead of eutt. *)
 Definition getchar_pre' (m : mem) (witness : byte -> IO_itree) (z : IO_itree) :=
@@ -2494,6 +2508,22 @@ Section SpecsCorrect.
 
   Context `{FindAddr}.
 
+  Lemma PDX_eq : forall x y,
+    x mod PAGE_SIZE = 0 ->
+    0 <= y < PAGE_SIZE ->
+    PDX x = PDX (x + y).
+  Proof.
+    unfold PDX; intros; rewrite div_plus; lia.
+  Qed.
+
+  Lemma PTX_eq : forall x y,
+    x mod PAGE_SIZE = 0 ->
+    0 <= y < PAGE_SIZE ->
+    PTX x = PTX (x + y).
+  Proof.
+    unfold PTX; intros; change PAGE_SIZE with (PAGE_SIZE * 1); rewrite div_plus; lia.
+  Qed.
+
   Lemma init_pte_unpresent : forall len i, 0 <= i <= Z.of_nat len ->
     ZMap.get i (Calculate_init_pte len) = PTEUnPresent.
   Proof.
@@ -2525,17 +2555,15 @@ Section SpecsCorrect.
     let vaddr' := vaddr + ofs in
     (* TODO: stronger than necessary *)
     vaddr mod PAGE_SIZE = 0 -> 0 <= ofs < PAGE_SIZE ->
-    PDX vaddr = PDX vaddr' ->
-    PTX vaddr = PTX vaddr' ->
     get_kernel_pa_spec pid vaddr st = Some paddr ->
     get_kernel_pa_spec pid vaddr' st = Some (paddr + ofs).
   Proof.
-    unfold get_kernel_pa_spec; intros * ? ? ? ? Hpaddr.
+    unfold get_kernel_pa_spec; intros * ? ? Hpaddr.
     destruct_spec Hpaddr.
-    erewrite ptRead_spec_same_page; eauto.
+    erewrite ptRead_spec_same_page; eauto using PDX_eq, PTX_eq.
     destruct (Coqlib.zeq z 0); try easy.
-    enough ((vaddr + ofs) mod 4096 = vaddr mod 4096 + ofs) as ->; auto with zarith.
-    rewrite <- (Z.mod_small (vaddr mod 4096 + ofs) 4096) by lia.
+    enough ((vaddr + ofs) mod PAGE_SIZE = vaddr mod PAGE_SIZE + ofs) as ->; auto with zarith.
+    rewrite <- (Z.mod_small (vaddr mod PAGE_SIZE + ofs) PAGE_SIZE) by lia.
     rewrite Z.add_mod_idemp_l; lia.
   Qed.
 
@@ -2595,7 +2623,7 @@ Section SpecsCorrect.
       { destruct p; cbn [PermToZ] in *; try lia.
         destruct b; lia.
       }
-      enough ((pi * 4096 + PermToZ p) / 4096 * 4096 = 4096 * pi) as ->; auto.
+      enough ((pi * PAGE_SIZE + PermToZ p) / PAGE_SIZE * PAGE_SIZE = PAGE_SIZE * pi) as ->; auto.
       rewrite Z.mul_comm, Z.mul_cancel_l, Z.div_add_l by lia.
       destruct p; cbn; try lia.
       destruct b; cbn; lia.
@@ -2626,7 +2654,7 @@ Section SpecsCorrect.
       { destruct p; cbn [PermToZ] in *; try lia.
         destruct b; lia.
       }
-      enough ((pi * 4096 + PermToZ p) / 4096 * 4096 = 4096 * pi) as ->; auto.
+      enough ((pi * PAGE_SIZE + PermToZ p) / PAGE_SIZE * PAGE_SIZE = PAGE_SIZE * pi) as ->; auto.
       rewrite Z.mul_comm, Z.mul_cancel_l, Z.div_add_l by lia.
       destruct p; cbn; try lia.
       destruct b; cbn; lia.
@@ -2687,7 +2715,7 @@ Section SpecsCorrect.
           unfold real_init_PTE.
           rewrite init_pte_unpresent; auto.
           unfold PTX; rewrite Z2Nat.id by lia.
-          pose proof (Z.mod_pos_bound (vaddr' / 4096) 1024); lia.
+          pose proof (Z.mod_pos_bound (vaddr' / PAGE_SIZE) 1024); lia.
         * intros Hneq.
           rewrite Haddr.
           destruct r; unfold get_kernel_pa_spec, ptRead_spec; cbn -[FlatMem.free_page real_init_PTE].
@@ -2793,7 +2821,7 @@ Section SpecsCorrect.
     destruct r; cbn -[big2_ptInsert_spec] in *.
     repeat (rewrite ZMap.gss in * || rewrite ZMap.gso in * by easy); subst; inj.
     do 2 esplit; eauto; intros.
-    prename Coqlib.zlt into Htmp; clear Htmp. (* rewrite fails on len < 4096 otherwise *)
+    prename Coqlib.zlt into Htmp; clear Htmp. (* rewrite fails on len < PAGE_SIZE otherwise *)
     rewrite Int.unsigned_repr in * by functional_base.rep_omega.
     prename big2_palloc_spec into Hspec'; pose proof Hspec' as Htmp.
     apply big2_palloc_spec_mem_changed in Htmp as (Hpid & Hmem_eq & Haddr_eq & Hperm_eq).
@@ -2816,24 +2844,20 @@ Section SpecsCorrect.
         rewrite <- Hmem_eq.
         rewrite FlatMem.setN_inside.
         { rewrite data_at_rec_lemmas.nth_list_repeat; auto. }
-        Search length Coqlib.list_repeat.
         rewrite Coqlib.length_list_repeat, Z2Nat.id; try lia.
         rewrite get_kernel_pa_same_page with (paddr := z2) in Hpaddr'; inj; try lia; auto.
-        admit. admit. (* TODO: arith *)
       + destruct Hcase2 as (? & Haddr_eq' & Hperm_eq'); subst; auto.
         rewrite <- Hmem_eq.
         rewrite FlatMem.setN_inside.
         { rewrite data_at_rec_lemmas.nth_list_repeat; auto. }
-        Search length Coqlib.list_repeat.
         rewrite Coqlib.length_list_repeat, Z2Nat.id; try lia.
         rewrite get_kernel_pa_same_page with (paddr := z2) in Hpaddr'; inj; try lia; auto.
-        admit. admit. (* TODO: arith *)
-    - assert (z <> paddr / 4096) by admit. (* TODO: OS invariant *)
-      assert (z1 <> paddr / 4096) by admit. (* TODO: OS invariant *)
+    - assert (z <> paddr / PAGE_SIZE) by admit. (* TODO: OS invariant *)
+      assert (z1 <> paddr / PAGE_SIZE) by admit. (* TODO: OS invariant *)
       erewrite mem_lemmas.AllocContentsOther; eauto.
       hnf in HRmem; cbn in HRmem; specialize (HRmem b ofs paddr).
       rewrite Hpid, Hmem_eq, Haddr_eq in HRmem.
-      specialize (Hperm_eq (paddr / 4096)).
+      specialize (Hperm_eq (paddr / PAGE_SIZE)).
       destruct Hperm_eq as (_ & _ & Hperm_eq).
       rewrite Hperm_eq in HRmem; auto.
       destruct (Coqlib.zeq z1 0); subst.
@@ -2856,7 +2880,7 @@ Section SpecsCorrect.
         specialize (Haddr_eq' (or_intror Hpdx)).
         rewrite Haddr_eq', Hpaddr' in HRmem.
         specialize (HRmem ltac:(auto)).
-        specialize (Hperm_eq' (paddr / 4096)).
+        specialize (Hperm_eq' (paddr / PAGE_SIZE)).
         destruct Hperm_eq' as (_ & Hperm_eq').
         rewrite Hperm_eq' in HRmem; auto.
         unfold FlatMem.free_page; rewrite !FlatMem.setN_outside.
