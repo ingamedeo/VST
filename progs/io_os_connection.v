@@ -2405,6 +2405,7 @@ Section SpecsCorrect.
     (* pose proof Hspec as Htrace_case. *)
     unfold sys_getcs_spec in Hspec; destruct_spec Hspec.
     prename (thread_cons_buf_read_loop_spec) into Hread.
+    pose proof Hread as Hread'.
     apply thread_cons_buf_read_loop_mem_changed in Hread as (msg & Hlen & ? & Hmem).
     (* apply thread_cons_buf_read_getcs_trace_case in Hread as (_ & ?). *)
     (* 2: eapply (thread_serial_intr_disable_preserve_valid_trace st); eauto. *)
@@ -2454,10 +2455,30 @@ Section SpecsCorrect.
         exists m'; split; auto.
         eapply mem_equiv_refl.
       + (* trace_itree_match *)
+        hnf; intros * Htrace.
+        prename (sutt eq _ _) into Htr_eq.
+        apply thread_serial_intr_disable_trace_case in Hdisable as (Htr & Heq).
+        cbn in Htr, Heq.
+        (* TODO: Need a '*_trace_case' theorem that describes how
+         * thread_cons_buf_read_loop_spec modifies io_log.
+         * Then prove that it matches the ITree (described by Htr_eq).
+         * See `recv_trace` and `recv_correct` in the DeepSpec web server repo
+         * for similar theorems.
+         *)
+        (* apply thread_cons_buf_read_loop_spec_trace_case in Hread' as (Htr' & Heq'). *)
+        apply thread_serial_intr_enable_trace_case in Henable as (Htr'' & Heq'').
+        cbn in Htr'', Heq''.
         admit.
       + (* R_mem *)
-        (* TODO: physical mem might not be consecutive, can't use storebytes or
-           setN *)
+        (* TODO: The physical memory that holds the buffer isn't necessarily
+         * consecutive, so one can't just use a single `storebytes` or `setN`.
+         * One option is to simply assumes that the buffer fit in a page so it
+         * is consecutive (see `recv_correct`, `valid_arg_ptr`, `args_stored`
+         * in the DeepSpec web server repo).
+         * The more general option is to break it up into as many calls to
+         * `storebytes` as necessary, but that would make things much more
+         * complicated.
+         *)
         hnf; intros * Hpaddr Halloc Hperm; subst curid; cbn.
         edestruct sys_getcs_pmap_unchanged as (Hpa & Hpperm); eauto.
         rewrite <- Hpa in Hpaddr; rewrite <- Hpperm in Halloc.
@@ -2600,6 +2621,10 @@ Section SpecsCorrect.
         get_kernel_pa_spec pid vaddr' st = get_kernel_pa_spec pid' vaddr' st')) /\
     st.(pperm) = st'.(pperm).
   Proof.
+    (* TODO: Admits marked with "OS invariant" rely on properties that CertiKOS
+     * always guarantees. To remove the admits one must prove that every spec
+     * in progs/io_os_specs.v preserves the invariants.
+     *)
     unfold big2_ptInsertPTE0_spec; intros * Hspec; destruct_spec Hspec.
     all: destruct st; cbn in *; repeat (split; auto).
     - intros ? Hpdx Hptx; subst.
@@ -2860,6 +2885,11 @@ Section SpecsCorrect.
       specialize (Hperm_eq (paddr / PAGE_SIZE)).
       destruct Hperm_eq as (_ & _ & Hperm_eq).
       rewrite Hperm_eq in HRmem; auto.
+      (* TODO: Several of these admits are mainly arithmetic for showing that
+       * two address ranges are disjoint. It is likely that at least some of
+       * them are already proved in certikos_socket/Proofs/Memory.v in the
+       * DeepSpec web server repo.
+       *)
       destruct (Coqlib.zeq z1 0); subst.
       + destruct Hcase1 as (? & Haddr_eq' & ?); subst; auto.
         specialize (Haddr_eq' (b2a.(b2a_map) b + ofs)).
